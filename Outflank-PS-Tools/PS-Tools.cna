@@ -1,0 +1,100 @@
+#author Cornelis de Plaa
+#@outflank.nl
+
+#shows detailed information from processes running on the system.
+
+#register help
+beacon_command_register("psx", "Show detailed information from all processes running on the system.",
+	"Synopsis: psx\n\n" .
+	"Shows a detailed list of all processes running on the system.\n");
+beacon_command_register("psk", "Show detailed information from the windows kernel and loaded driver modules.",
+	"Synopsis: psk\n\n" .
+	"Shows a detailed list of the windows kernel and all loaded kernel modules.\n");
+beacon_command_register("psc", "Show detailed information from processes with Established TCP connections.",
+	"Synopsis: psc\n\n" .
+	"Shows a detailed list of all processes with Established TCP connections.\n");
+beacon_command_register("psw", "Show Window titles from processes with active Windows.",
+	"Synopsis: psw\n\n" .
+	"Show Window titles from processes with active Windows.\n");    
+beacon_command_register("psm", "Show detailed information from a specific process id (loaded modules, tcp connections e.g.).",
+	"Synopsis: psm [processid] [x86] \n" .
+    "          Default process arch is x64. Use optional x86 param when process is WOW64 or system is x86 only.\n\n" .
+	"Shows detailed information from a specific process id.\n");
+beacon_command_register("psh", "Show detailed information from a specific process id (object handles, tcp connections e.g.).",
+	"Synopsis: psh [processid]\n\n" .
+	"Shows detailed information from a specific process id.\n");
+
+alias psx {
+    $bid = $1;
+
+    blog($bid, "Enumerating processes.");
+    bdllspawn($bid, script_resource("Outflank-PsX.dll"), "", "PsX", 5000, false);
+    return;
+}
+
+alias psk {
+    $bid = $1;
+
+    blog($bid, "Enumerating the windows kernel and loaded driver modules.");
+    bdllspawn($bid, script_resource("Outflank-PsK.dll"), "", "PsK", 5000, false);
+    return;
+}
+
+alias psc {
+    $bid = $1;
+
+    blog($bid, "Enumerating processes with Established TCP connections.");
+    bdllspawn($bid, script_resource("Outflank-PsC.dll"), "", "PsC", 5000, false);
+    return;
+}
+
+alias psw {
+    $bid = $1;
+
+    blog($bid, "Enumerating processes with Active Windows.");
+    bdllspawn($bid, script_resource("Outflank-PsW.dll"), "", "PsW", 5000, false);
+    return;
+}
+
+alias psm {
+    $bid = $1;
+    $input = substr($0, 4);
+	@args = split(' ', $input);
+
+    $pid = @args[0];
+    $arch = @args[1];
+
+    if ($pid eq "") {
+		berror($bid, "Please enter a process id.");
+		return;
+	}
+
+    if ($arch ne "x86") {
+		$arch = "x64";
+        $psmdll = "Outflank-PsM.x64.dll";
+	}
+	else {
+		$psmdll = "Outflank-PsM.x86.dll";
+	}
+
+    blog($bid, "Enumerating process id: " . $pid);
+    bdllspawn($bid, script_resource($psmdll), $pid, "PsM", 5000, false);
+    return;
+}
+
+alias psh {
+    $bid = $1;
+    $input = substr($0, 4);
+	@args = split(' ', $input);
+
+    $pid = @args[0];
+
+    if ($pid eq "") {
+		berror($bid, "Please enter a process id.");
+		return;
+	}
+
+    blog($bid, "Enumerating process id: " . $pid);
+    bdllspawn($bid, script_resource("Outflank-PsH.dll"), $pid, "PsH", 5000, false);
+    return;
+}
