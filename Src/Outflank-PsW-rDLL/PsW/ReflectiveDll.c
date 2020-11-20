@@ -17,8 +17,11 @@
 extern HINSTANCE hAppInstance;
 
 BOOL CALLBACK EnumWindowsProc(HWND hWnd, LPARAM lParam) {
+	NTSTATUS status;
 	DWORD dwProcessId = 0;
 	WCHAR chWindowTitle[MAX_PATH];
+	LPVOID pBuffer = NULL;
+	SIZE_T uSize = 0;
 
 	_NtQuerySystemInformation NtQuerySystemInformation = (_NtQuerySystemInformation)
 		GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtQuerySystemInformation");
@@ -54,28 +57,31 @@ BOOL CALLBACK EnumWindowsProc(HWND hWnd, LPARAM lParam) {
 
 	if (dwProcessId != 0) {
 		ULONG uReturnLength = 0;
-		NTSTATUS status = NtQuerySystemInformation(SystemProcessInformation, 0, 0, &uReturnLength);
+		status = NtQuerySystemInformation(SystemProcessInformation, 0, 0, &uReturnLength);
 		if (!status == 0xc0000004) {
 			return TRUE;
 		}
 
-		LPVOID pBuffer = NULL;
-		SIZE_T uSize = uReturnLength;
+		uSize = uReturnLength;
 		status = NtAllocateVirtualMemory(NtCurrentProcess(), &pBuffer, 0, &uSize, MEM_COMMIT, PAGE_READWRITE);
 		if (status != STATUS_SUCCESS) {
-			return TRUE;
+			goto CleanUp;
 		}
 
 		status = NtQuerySystemInformation(SystemProcessInformation, pBuffer, uReturnLength, &uReturnLength);
 		if (status != STATUS_SUCCESS) {
-			return TRUE;
+			goto CleanUp;
 		}
+
+#pragma warning( push )
+#pragma warning( disable : 4311 )		//C4311: 'type cast': pointer truncation from 'HANDLE' to 'DWORD'
+#pragma warning( disable : 4302 )		//C4302: 'type cast': truncation from 'HANDLE' to 'DWORD'
 
 		PSYSTEM_PROCESSES pProcInfo = (PSYSTEM_PROCESSES)pBuffer;
 		do {
 			pProcInfo = (PSYSTEM_PROCESSES)(((LPBYTE)pProcInfo) + pProcInfo->NextEntryDelta);
 
-			if (pProcInfo->ProcessId == dwProcessId) {
+			if ((DWORD)pProcInfo->ProcessId == dwProcessId) {
 				wprintf(L"\n[+] ProcessName:\t %wZ\n", &pProcInfo->ProcessName);
 				wprintf(L"    ProcessID:\t %d\n", dwProcessId);
 				wprintf(L"    WindowTitle:\t %ls\n", chWindowTitle);
@@ -87,7 +93,12 @@ BOOL CALLBACK EnumWindowsProc(HWND hWnd, LPARAM lParam) {
 			}
 
 		} while (pProcInfo);
+	}
 
+#pragma warning( pop )
+
+CleanUp:
+	if (pBuffer != NULL) {
 		status = NtFreeVirtualMemory(NtCurrentProcess(), &pBuffer, &uSize, MEM_RELEASE);
 	}
 
