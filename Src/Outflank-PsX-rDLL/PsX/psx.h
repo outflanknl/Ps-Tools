@@ -5,6 +5,7 @@
 
 #define STATUS_SUCCESS 0
 #define STATUS_BUFFER_TOO_SMALL 0xC0000023
+#define STATUS_INFO_LENGTH_MISMATCH 0xC0000004
 #define MAX_NAME 256
 typedef LONG KPRIORITY;
 
@@ -24,6 +25,13 @@ typedef LONG KPRIORITY;
       (i)->SecurityDescriptor = s;                       \
       (i)->SecurityQualityOfService = NULL;              \
    }
+
+enum IntegLevel {
+	LowIntegrity = 1,
+	MediumIntegrity = 2,
+	HighIntegrity = 3,
+	SystemIntegrity = 4
+};
 
 typedef struct _UNICODE_STRING {
 	USHORT Length;
@@ -62,6 +70,37 @@ typedef enum _SYSTEM_INFORMATION_CLASS {
 	SystemModuleInformation,
 	SystemProcessIdInformation = 88
 } SYSTEM_INFORMATION_CLASS, *PSYSTEM_INFORMATION_CLASS;
+
+// Partial PROCESSINFOCLASS
+typedef enum _PROCESSINFOCLASS {
+	ProcessBasicInformation, // q: PROCESS_BASIC_INFORMATION, PROCESS_EXTENDED_BASIC_INFORMATION
+	ProcessQuotaLimits, // qs: QUOTA_LIMITS, QUOTA_LIMITS_EX
+	ProcessIoCounters, // q: IO_COUNTERS
+	ProcessVmCounters, // q: VM_COUNTERS, VM_COUNTERS_EX, VM_COUNTERS_EX2
+	ProcessTimes, // q: KERNEL_USER_TIMES
+	ProcessBasePriority, // s: KPRIORITY
+	ProcessRaisePriority, // s: ULONG
+	ProcessDebugPort, // q: HANDLE
+	ProcessExceptionPort, // s: PROCESS_EXCEPTION_PORT
+	ProcessAccessToken, // s: PROCESS_ACCESS_TOKEN
+	ProcessLdtInformation, // qs: PROCESS_LDT_INFORMATION // 10
+	ProcessLdtSize, // s: PROCESS_LDT_SIZE
+	ProcessDefaultHardErrorMode, // qs: ULONG
+	ProcessIoPortHandlers, // (kernel-mode only)
+	ProcessPooledUsageAndLimits, // q: POOLED_USAGE_AND_LIMITS
+	ProcessWorkingSetWatch, // q: PROCESS_WS_WATCH_INFORMATION[]; s: void
+	ProcessUserModeIOPL,
+	ProcessEnableAlignmentFaultFixup, // s: BOOLEAN
+	ProcessPriorityClass, // qs: PROCESS_PRIORITY_CLASS
+	ProcessWx86Information,
+	ProcessHandleCount, // q: ULONG, PROCESS_HANDLE_INFORMATION // 20
+	ProcessAffinityMask, // s: KAFFINITY
+	ProcessPriorityBoost, // qs: ULONG
+	ProcessDeviceMap, // qs: PROCESS_DEVICEMAP_INFORMATION, PROCESS_DEVICEMAP_INFORMATION_EX
+	ProcessSessionInformation, // q: PROCESS_SESSION_INFORMATION
+	ProcessForegroundInformation, // s: PROCESS_FOREGROUND_BACKGROUND
+	ProcessWow64Information // q: ULONG_PTR
+} PROCESSINFOCLASS;
 
 typedef struct _SYSTEM_PROCESSES {
 	ULONG NextEntryDelta;
@@ -116,7 +155,7 @@ typedef struct _RTL_USER_PROCESS_PARAMETERS {
 } RTL_USER_PROCESS_PARAMETERS, *PRTL_USER_PROCESS_PARAMETERS;
 
 // Partial PEB
-typedef struct _PEB {
+typedef struct _PEB2 {
 	BOOLEAN InheritedAddressSpace;
 	BOOLEAN ReadImageFileExecOptions;
 	BOOLEAN BeingDebugged;
@@ -155,9 +194,13 @@ typedef struct _IO_STATUS_BLOCK
 
 typedef struct _SECPROD {
 	DWORD dwPID;
-	LPWSTR lpCompany;
-	LPWSTR lpDescription;
+	WCHAR wcCompany[MAX_PATH];
+	WCHAR wcDescription[MAX_PATH];
 } SECPROD, *PSECPROD;
+
+typedef struct _SECCOMP {
+	WCHAR wcCompany[64];
+} SECCOMP, *PSECCOMP;
 
 typedef void (WINAPI * PIO_APC_ROUTINE)(PVOID, PIO_STATUS_BLOCK, ULONG);
 
@@ -213,6 +256,15 @@ typedef NTSTATUS(NTAPI *_NtAdjustPrivilegesToken)(
 	IN ULONG PreviousPrivilegesLength,
 	OUT PTOKEN_PRIVILEGES PreviousPrivileges OPTIONAL,
 	OUT PULONG RequiredLength OPTIONAL
+	);
+
+typedef NTSYSAPI PULONG(NTAPI *_RtlSubAuthoritySid)(
+	PSID  Sid,
+	ULONG SubAuthority
+	);
+
+typedef NTSYSAPI PUCHAR(NTAPI *_RtlSubAuthorityCountSid)(
+	_In_ PSID Sid
 	);
 
 typedef NTSTATUS(NTAPI *_NtQueryInformationProcess)(
