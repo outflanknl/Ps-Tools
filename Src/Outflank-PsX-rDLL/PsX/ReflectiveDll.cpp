@@ -161,14 +161,16 @@ LPWSTR GetProcessUser(IN HANDLE hProcess, BOOL bCloseHandle, BOOL bReturnDomainn
 		}
 
 		lpwUser = (LPWSTR)calloc(MAX_NAME, sizeof(WCHAR));
-		if (bReturnDomainname) {
-			wcscat_s(lpwUser, MAX_NAME, lpDomain);
-			if (bReturnUsername) {
-				wcscat_s(lpwUser, MAX_NAME, L"\\");
+		if (lpwUser != NULL) {
+			if (bReturnDomainname) {
+				wcscat_s(lpwUser, MAX_NAME, lpDomain);
+				if (bReturnUsername) {
+					wcscat_s(lpwUser, MAX_NAME, L"\\");
+				}
 			}
-		}
-		if (bReturnUsername) {
-			wcscat_s(lpwUser, MAX_NAME, lpName);
+			if (bReturnUsername) {
+				wcscat_s(lpwUser, MAX_NAME, lpName);
+			}
 		}
 	}
 
@@ -303,8 +305,8 @@ BOOL EnumSecurityProc(IN LPWSTR lpCompany, IN LPWSTR lpDescription, IN DWORD dwP
 	for (DWORD i = 0; i < dwSize && dwSecProcCount < MAX_SEC_PRD; i++) {
 		if (StrStrIW(lpCompany, pwszCompany[i])) {
 			pSecProducts[dwSecProcCount]->dwPID = dwPID;
-			RtlCopyMemory(pSecProducts[dwSecProcCount]->wcCompany, lpCompany, MAX_PATH);
-			RtlCopyMemory(pSecProducts[dwSecProcCount]->wcDescription, lpDescription, MAX_PATH);
+			RtlCopyMemory(pSecProducts[dwSecProcCount]->wcCompany, lpCompany, wcslen(lpCompany) * sizeof(WCHAR));
+			RtlCopyMemory(pSecProducts[dwSecProcCount]->wcDescription, lpDescription, wcslen(lpDescription) * sizeof(WCHAR));
 			dwSecProcCount++;
 		}
 	}
@@ -313,8 +315,8 @@ BOOL EnumSecurityProc(IN LPWSTR lpCompany, IN LPWSTR lpDescription, IN DWORD dwP
 		//Windows Defender (ATP)
 		if (StrStrIW(lpDescription, L"Antimalware Service Executable") || StrStrIW(lpDescription, L"Windows Defender")) {
 			pSecProducts[dwSecProcCount]->dwPID = dwPID;
-			RtlCopyMemory(pSecProducts[dwSecProcCount]->wcCompany, lpCompany, MAX_PATH);
-			RtlCopyMemory(pSecProducts[dwSecProcCount]->wcDescription, lpDescription, MAX_PATH);
+			RtlCopyMemory(pSecProducts[dwSecProcCount]->wcCompany, lpCompany, wcslen(lpCompany) * sizeof(WCHAR));
+			RtlCopyMemory(pSecProducts[dwSecProcCount]->wcDescription, lpDescription, wcslen(lpDescription) * sizeof(WCHAR));
 			dwSecProcCount++;
 		}
 	}
@@ -323,8 +325,8 @@ BOOL EnumSecurityProc(IN LPWSTR lpCompany, IN LPWSTR lpDescription, IN DWORD dwP
 		//Carbon Black
 		if (StrStrIW(lpDescription, L"Carbon Black")) {
 			pSecProducts[dwSecProcCount]->dwPID = dwPID;
-			RtlCopyMemory(pSecProducts[dwSecProcCount]->wcCompany, lpCompany, MAX_PATH);
-			RtlCopyMemory(pSecProducts[dwSecProcCount]->wcDescription, lpDescription, MAX_PATH);
+			RtlCopyMemory(pSecProducts[dwSecProcCount]->wcCompany, lpCompany, wcslen(lpCompany) * sizeof(WCHAR));
+			RtlCopyMemory(pSecProducts[dwSecProcCount]->wcDescription, lpDescription, wcslen(lpDescription) * sizeof(WCHAR));
 			dwSecProcCount++;
 		}
 	}
@@ -353,14 +355,14 @@ BOOL PrintSummary(IN LPSTREAM lpStream, DWORD dwTotalProc, DWORD dwLowProc, DWOR
 			return FALSE;
 		}
 
-		RtlZeroMemory(chBuffer, _countof(chBuffer));
+		RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 		swprintf_s(chBuffer, _countof(chBuffer), L"[!] Security products found: %d\n", dwSecProcCount);
 		if (FAILED(hr = lpStream->Write(chBuffer, (ULONG)wcslen(chBuffer) * sizeof(WCHAR), &dwWritten))) {
 			return FALSE;
 		}
 
-		RtlZeroMemory(chBuffer, _countof(chBuffer));
+		RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 		for (DWORD i = 0; i < dwSecProcCount; i++) {
 			swprintf_s(chBuffer, _countof(chBuffer), L"    ProcessID:\t %d\n", pSecProducts[i]->dwPID);
@@ -368,21 +370,21 @@ BOOL PrintSummary(IN LPSTREAM lpStream, DWORD dwTotalProc, DWORD dwLowProc, DWOR
 				return FALSE;
 			}
 
-			RtlZeroMemory(chBuffer, _countof(chBuffer));
+			RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 			swprintf_s(chBuffer, _countof(chBuffer), L"    Vendor:\t %ls\n", pSecProducts[i]->wcCompany);
 			if (FAILED(hr = lpStream->Write(chBuffer, (ULONG)wcslen(chBuffer) * sizeof(WCHAR), &dwWritten))) {
 				return FALSE;
 			}
 
-			RtlZeroMemory(chBuffer, _countof(chBuffer));
+			RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 			swprintf_s(chBuffer, _countof(chBuffer), L"    Product:\t %ls\n\n", pSecProducts[i]->wcDescription);
 			if (FAILED(hr = lpStream->Write(chBuffer, (ULONG)wcslen(chBuffer) * sizeof(WCHAR), &dwWritten))) {
 				return FALSE;
 			}
 
-			RtlZeroMemory(chBuffer, _countof(chBuffer));
+			RtlZeroMemory(chBuffer, sizeof(chBuffer));
 		}
 	}
 	swprintf_s(chBuffer, _countof(chBuffer), L"--------------------------------------------------------------------\n");
@@ -396,7 +398,7 @@ BOOL PrintSummary(IN LPSTREAM lpStream, DWORD dwTotalProc, DWORD dwLowProc, DWOR
 			return FALSE;
 		}
 
-		RtlZeroMemory(chBuffer, _countof(chBuffer));
+		RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 		if (dwMediumProc > 0) {
 			swprintf_s(chBuffer, _countof(chBuffer), L"    Low integrity processes:    %d\n", dwLowProc);
@@ -404,14 +406,14 @@ BOOL PrintSummary(IN LPSTREAM lpStream, DWORD dwTotalProc, DWORD dwLowProc, DWOR
 				return FALSE;
 			}
 
-			RtlZeroMemory(chBuffer, _countof(chBuffer));
+			RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 			swprintf_s(chBuffer, _countof(chBuffer), L"    Medium integrity processes: %d\n", dwMediumProc);
 			if (FAILED(hr = lpStream->Write(chBuffer, (ULONG)wcslen(chBuffer) * sizeof(WCHAR), &dwWritten))) {
 				return FALSE;
 			}
 
-			RtlZeroMemory(chBuffer, _countof(chBuffer));
+			RtlZeroMemory(chBuffer, sizeof(chBuffer));
 		}
 	}
 	else {
@@ -420,35 +422,35 @@ BOOL PrintSummary(IN LPSTREAM lpStream, DWORD dwTotalProc, DWORD dwLowProc, DWOR
 			return FALSE;
 		}
 
-		RtlZeroMemory(chBuffer, _countof(chBuffer));
+		RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 		swprintf_s(chBuffer, _countof(chBuffer), L"    Low integrity processes:    %d\n", dwLowProc);
 		if (FAILED(hr = lpStream->Write(chBuffer, (ULONG)wcslen(chBuffer) * sizeof(WCHAR), &dwWritten))) {
 			return FALSE;
 		}
 
-		RtlZeroMemory(chBuffer, _countof(chBuffer));
+		RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 		swprintf_s(chBuffer, _countof(chBuffer), L"    Medium integrity processes: %d\n", dwMediumProc);
 		if (FAILED(hr = lpStream->Write(chBuffer, (ULONG)wcslen(chBuffer) * sizeof(WCHAR), &dwWritten))) {
 			return FALSE;
 		}
 
-		RtlZeroMemory(chBuffer, _countof(chBuffer));
+		RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 		swprintf_s(chBuffer, _countof(chBuffer), L"    High integrity processes:   %d\n", dwHighProc);
 		if (FAILED(hr = lpStream->Write(chBuffer, (ULONG)wcslen(chBuffer) * sizeof(WCHAR), &dwWritten))) {
 			return FALSE;
 		}
 
-		RtlZeroMemory(chBuffer, _countof(chBuffer));
+		RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 		swprintf_s(chBuffer, _countof(chBuffer), L"    System integrity processes: %d\n", dwSystemProc);
 		if (FAILED(hr = lpStream->Write(chBuffer, (ULONG)wcslen(chBuffer) * sizeof(WCHAR), &dwWritten))) {
 			return FALSE;
 		}
 
-		RtlZeroMemory(chBuffer, _countof(chBuffer));
+		RtlZeroMemory(chBuffer, sizeof(chBuffer));
 	}
 
 	swprintf_s(chBuffer, _countof(chBuffer), L"    Microsoft processes:        %d\n", dwMSProc);
@@ -456,21 +458,21 @@ BOOL PrintSummary(IN LPSTREAM lpStream, DWORD dwTotalProc, DWORD dwLowProc, DWOR
 		return FALSE;
 	}
 
-	RtlZeroMemory(chBuffer, _countof(chBuffer));
+	RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 	swprintf_s(chBuffer, _countof(chBuffer), L"    Non Microsoft processes:    %d\n\n", dwNonMSProc);
 	if (FAILED(hr = lpStream->Write(chBuffer, (ULONG)wcslen(chBuffer) * sizeof(WCHAR), &dwWritten))) {
 		return FALSE;
 	}
 
-	RtlZeroMemory(chBuffer, _countof(chBuffer));
+	RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 	swprintf_s(chBuffer, _countof(chBuffer), L"    Total active processes:     %d\n\n", dwTotalProc);
 	if (FAILED(hr = lpStream->Write(chBuffer, (ULONG)wcslen(chBuffer) * sizeof(WCHAR), &dwWritten))) {
 		return FALSE;
 	}
 
-	RtlZeroMemory(chBuffer, _countof(chBuffer));
+	RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 	return TRUE;
 }
@@ -480,7 +482,7 @@ BOOL EnumPeb(HANDLE hProcess, IN LPSTREAM lpStream) {
 	PEB peb;
 	RTL_USER_PROCESS_PARAMETERS upp;
 	HRESULT hr = S_OK;
-	WCHAR chReadBuf[MAX_BUF] = { 0 };
+	WCHAR chReadBuf[MAX_BUF * 4] = { 0 };
 	WCHAR chWriteBuf[MAX_BUF] = { 0 };
 	DWORD dwWritten = 0;
 
@@ -521,8 +523,8 @@ BOOL EnumPeb(HANDLE hProcess, IN LPSTREAM lpStream) {
 		return FALSE;
 	}
 
-	RtlZeroMemory(chReadBuf, _countof(chReadBuf));
-	RtlZeroMemory(chWriteBuf, _countof(chWriteBuf));
+	RtlZeroMemory(chReadBuf, sizeof(chReadBuf));
+	RtlZeroMemory(chWriteBuf, sizeof(chWriteBuf));
 
 	status = NtReadVirtualMemory(hProcess, upp.CommandLine.Buffer, &chReadBuf, upp.CommandLine.MaximumLength, NULL);
 	if (status != STATUS_SUCCESS) {
@@ -534,8 +536,8 @@ BOOL EnumPeb(HANDLE hProcess, IN LPSTREAM lpStream) {
 		return FALSE;
 	}
 
-	RtlZeroMemory(chReadBuf, _countof(chReadBuf));
-	RtlZeroMemory(chWriteBuf, _countof(chWriteBuf));
+	RtlZeroMemory(chReadBuf, sizeof(chReadBuf));
+	RtlZeroMemory(chWriteBuf, sizeof(chWriteBuf));
 
 	return TRUE;
 }
@@ -575,7 +577,7 @@ BOOL EnumFileProperties(IN HANDLE ProcessId, IN LPSTREAM lpStream) {
 
 	pInfo.ProcessId = ProcessId;
 	pInfo.ImageName.Length = 0;
-	pInfo.ImageName.MaximumLength = MAX_PATH;
+	pInfo.ImageName.MaximumLength = MAX_PATH * sizeof(WCHAR);
 	pInfo.ImageName.Buffer = NULL;
 
 	pInfo.ImageName.Buffer = (PWSTR)calloc(pInfo.ImageName.MaximumLength, sizeof(WCHAR));
@@ -613,7 +615,7 @@ BOOL EnumFileProperties(IN HANDLE ProcessId, IN LPSTREAM lpStream) {
 		goto CleanUp;
 	}
 
-	RtlZeroMemory(chBuffer, _countof(chBuffer));
+	RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 	if (GetBinaryType(pwszPath, &dwBinaryType)) {
 		if (dwBinaryType == SCS_64BIT_BINARY) {
@@ -622,7 +624,7 @@ BOOL EnumFileProperties(IN HANDLE ProcessId, IN LPSTREAM lpStream) {
 				goto CleanUp;
 			}
 
-			RtlZeroMemory(chBuffer, _countof(chBuffer));
+			RtlZeroMemory(chBuffer, sizeof(chBuffer));
 		}
 		else {
 			swprintf_s(chBuffer, _countof(chBuffer), L"    ImageType:   32-bit\n");
@@ -630,7 +632,7 @@ BOOL EnumFileProperties(IN HANDLE ProcessId, IN LPSTREAM lpStream) {
 				goto CleanUp;
 			}
 
-			RtlZeroMemory(chBuffer, _countof(chBuffer));
+			RtlZeroMemory(chBuffer, sizeof(chBuffer));
 		}
 	}
 
@@ -672,7 +674,7 @@ BOOL EnumFileProperties(IN HANDLE ProcessId, IN LPSTREAM lpStream) {
 				goto CleanUp;
 			}
 
-			RtlZeroMemory(chBuffer, _countof(chBuffer));
+			RtlZeroMemory(chBuffer, sizeof(chBuffer));
 		}
 		if (VerQueryValue(lpVerInfo, wcDescription, (void **)&lpDescription, &uLen)) {
 			swprintf_s(chBuffer, _countof(chBuffer), L"    Description: %ls\n", lpDescription);
@@ -680,7 +682,7 @@ BOOL EnumFileProperties(IN HANDLE ProcessId, IN LPSTREAM lpStream) {
 				goto CleanUp;
 			}
 
-			RtlZeroMemory(chBuffer, _countof(chBuffer));
+			RtlZeroMemory(chBuffer, sizeof(chBuffer));
 		}
 		if (VerQueryValue(lpVerInfo, wcProductVersion, (void **)&lpProductVersion, &uLen)) {
 			swprintf_s(chBuffer, _countof(chBuffer), L"    Version:     %ls\n", lpProductVersion);
@@ -688,7 +690,7 @@ BOOL EnumFileProperties(IN HANDLE ProcessId, IN LPSTREAM lpStream) {
 				goto CleanUp;
 			}
 
-			RtlZeroMemory(chBuffer, _countof(chBuffer));
+			RtlZeroMemory(chBuffer, sizeof(chBuffer));
 		}
 
 #pragma warning( push )
@@ -827,7 +829,7 @@ BOOL EnumKernel(IN LPSTREAM lpStream) {
 			goto CleanUp;
 		}
 
-		RtlZeroMemory(chBuffer, _countof(chBuffer));
+		RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 		if (GetBinaryType(pwszPath, &dwBinaryType)) {
 			if (dwBinaryType == SCS_64BIT_BINARY) {
@@ -836,7 +838,7 @@ BOOL EnumKernel(IN LPSTREAM lpStream) {
 					goto CleanUp;
 				}
 
-				RtlZeroMemory(chBuffer, _countof(chBuffer));
+				RtlZeroMemory(chBuffer, sizeof(chBuffer));
 			}
 			else {
 				swprintf_s(chBuffer, _countof(chBuffer), L"    ImageType:   32-bit\n");
@@ -844,7 +846,7 @@ BOOL EnumKernel(IN LPSTREAM lpStream) {
 					goto CleanUp;
 				}
 
-				RtlZeroMemory(chBuffer, _countof(chBuffer));
+				RtlZeroMemory(chBuffer, sizeof(chBuffer));
 			}
 		}
 
@@ -886,7 +888,7 @@ BOOL EnumKernel(IN LPSTREAM lpStream) {
 					goto CleanUp;
 				}
 
-				RtlZeroMemory(chBuffer, _countof(chBuffer));
+				RtlZeroMemory(chBuffer, sizeof(chBuffer));
 			}
 			if (VerQueryValue(lpVerInfo, wcDescription, (void **)&lpDescription, &uLen)) {
 				swprintf_s(chBuffer, _countof(chBuffer), L"    Description: %ls\n", lpDescription);
@@ -894,7 +896,7 @@ BOOL EnumKernel(IN LPSTREAM lpStream) {
 					goto CleanUp;
 				}
 
-				RtlZeroMemory(chBuffer, _countof(chBuffer));
+				RtlZeroMemory(chBuffer, sizeof(chBuffer));
 			}
 			if (VerQueryValue(lpVerInfo, wcProductVersion, (void **)&lpProductVersion, &uLen)) {
 				swprintf_s(chBuffer, _countof(chBuffer), L"    Version:     %ls\n", lpProductVersion);
@@ -902,7 +904,7 @@ BOOL EnumKernel(IN LPSTREAM lpStream) {
 					goto CleanUp;
 				}
 
-				RtlZeroMemory(chBuffer, _countof(chBuffer));
+				RtlZeroMemory(chBuffer, sizeof(chBuffer));
 			}
 		}
 	}
@@ -912,14 +914,14 @@ BOOL EnumKernel(IN LPSTREAM lpStream) {
 			goto CleanUp;
 		}
 
-		RtlZeroMemory(chBuffer, _countof(chBuffer));
+		RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 		swprintf_s(chBuffer, _countof(chBuffer), L"    BaseAddress: 0x%p \n", kernelBase);
 		if (FAILED(hr = lpStream->Write(chBuffer, (ULONG)wcslen(chBuffer) * sizeof(WCHAR), &dwWritten))) {
 			goto CleanUp;
 		}
 
-		RtlZeroMemory(chBuffer, _countof(chBuffer));
+		RtlZeroMemory(chBuffer, sizeof(chBuffer));
 	}
 
 CleanUp:
@@ -1074,7 +1076,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 				goto CleanUp;
 			}
 
-			RtlZeroMemory(chBuffer, _countof(chBuffer));
+			RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 			pProcInfo = (PSYSTEM_PROCESSES)pBuffer;
 			do {
@@ -1085,21 +1087,21 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 					goto CleanUp;
 				}
 
-				RtlZeroMemory(chBuffer, _countof(chBuffer));
+				RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 				swprintf_s(chBuffer, _countof(chBuffer), L"    ProcessID:   %d\n", (DWORD)pProcInfo->ProcessId);
 				if (FAILED(hr = lpStream->Write(chBuffer, (ULONG)wcslen(chBuffer) * sizeof(WCHAR), &dwWritten))) {
 					goto CleanUp;
 				}
 
-				RtlZeroMemory(chBuffer, _countof(chBuffer));
+				RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 				swprintf_s(chBuffer, _countof(chBuffer), L"    PPID:        %d ", (DWORD)pProcInfo->InheritedFromProcessId);
 				if (FAILED(hr = lpStream->Write(chBuffer, (ULONG)wcslen(chBuffer) * sizeof(WCHAR), &dwWritten))) {
 					goto CleanUp;
 				}
 
-				RtlZeroMemory(chBuffer, _countof(chBuffer));
+				RtlZeroMemory(chBuffer, sizeof(chBuffer));
 				dwTotalProc++;
 
 				PSYSTEM_PROCESSES pParentInfo = (PSYSTEM_PROCESSES)pBuffer;
@@ -1112,7 +1114,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 							goto CleanUp;
 						}
 
-						RtlZeroMemory(chBuffer, _countof(chBuffer));
+						RtlZeroMemory(chBuffer, sizeof(chBuffer));
 						break;
 					}
 					else if (pParentInfo->NextEntryDelta == 0) {
@@ -1121,7 +1123,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 							goto CleanUp;
 						}
 
-						RtlZeroMemory(chBuffer, _countof(chBuffer));
+						RtlZeroMemory(chBuffer, sizeof(chBuffer));
 						break;
 					}
 
@@ -1138,7 +1140,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 						goto CleanUp;
 					}
 
-					RtlZeroMemory(chBuffer, _countof(chBuffer));
+					RtlZeroMemory(chBuffer, sizeof(chBuffer));
 				}
 
 				if (ProcessIdToSessionId((DWORD)pProcInfo->ProcessId, &SessionID)) {
@@ -1148,7 +1150,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 						goto CleanUp;
 					}
 
-					RtlZeroMemory(chBuffer, _countof(chBuffer));
+					RtlZeroMemory(chBuffer, sizeof(chBuffer));
 				}
 
 				// Exclude ProcessHandle on Lsass and WinLogon (Sysmon will log this). 
@@ -1185,10 +1187,11 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 						if (lpwProcUser != NULL) {
 							swprintf_s(chBuffer, _countof(chBuffer), L"    UserName:    %s\n", lpwProcUser);
 							if (FAILED(hr = lpStream->Write(chBuffer, (ULONG)wcslen(chBuffer) * sizeof(WCHAR), &dwWritten))) {
+								free(lpwProcUser);
 								goto CleanUp;
 							}
 
-							RtlZeroMemory(chBuffer, _countof(chBuffer));
+							RtlZeroMemory(chBuffer, sizeof(chBuffer));
 							free(lpwProcUser);
 						}
 
@@ -1199,7 +1202,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 								goto CleanUp;
 							}
 
-							RtlZeroMemory(chBuffer, _countof(chBuffer));
+							RtlZeroMemory(chBuffer, sizeof(chBuffer));
 							dwLowProc++;
 						}
 						else if (dwIntegrityLevel == MediumIntegrity) {
@@ -1208,7 +1211,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 								goto CleanUp;
 							}
 
-							RtlZeroMemory(chBuffer, _countof(chBuffer));
+							RtlZeroMemory(chBuffer, sizeof(chBuffer));
 							dwMediumProc++;
 						}
 						else if (dwIntegrityLevel == HighIntegrity) {
@@ -1217,7 +1220,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 								goto CleanUp;
 							}
 
-							RtlZeroMemory(chBuffer, _countof(chBuffer));
+							RtlZeroMemory(chBuffer, sizeof(chBuffer));
 							dwHighProc++;
 						}
 						else if (dwIntegrityLevel == SystemIntegrity) {
@@ -1226,7 +1229,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 								goto CleanUp;
 							}
 
-							RtlZeroMemory(chBuffer, _countof(chBuffer));
+							RtlZeroMemory(chBuffer, sizeof(chBuffer));
 							dwSystemProc++;
 						}
 
@@ -1252,7 +1255,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 				goto CleanUp;
 			}
 
-			RtlZeroMemory(chBuffer, _countof(chBuffer));
+			RtlZeroMemory(chBuffer, sizeof(chBuffer));
 
 			// Allocate enough memory for the Output
 			if (FAILED(lpStream->Stat(&ssStreamData, STATFLAG_NONAME))) {
