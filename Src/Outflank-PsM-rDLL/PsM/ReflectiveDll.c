@@ -666,6 +666,10 @@ BOOL EnumKernel() {
 
 CleanUp:
 
+	if (lpwKernelPath != NULL) {
+		free(lpwKernelPath);
+	}
+
 	if (pBuffer == NULL) {
 		status = NtFreeVirtualMemory(NtCurrentProcess(), &pBuffer, &uSize, MEM_RELEASE);
 	}
