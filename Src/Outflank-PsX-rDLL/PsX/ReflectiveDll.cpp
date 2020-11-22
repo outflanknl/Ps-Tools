@@ -926,6 +926,10 @@ BOOL EnumKernel(IN LPSTREAM lpStream) {
 
 CleanUp:
 
+	if (lpwKernelPath != NULL) {
+		free(lpwKernelPath);
+	}
+
 	if (pBuffer == NULL) {
 		status = NtFreeVirtualMemory(NtCurrentProcess(), &pBuffer, &uSize, MEM_RELEASE);
 	}
@@ -967,6 +971,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 			mbstowcs_s(&convertedChars, pwszParams, newsize, (LPSTR)lpReserved, _TRUNCATE);
 
 			BOOL bExtended = TRUE;
+			HANDLE hProcess = NULL;
 			HRESULT hr = S_OK;
 			NTSTATUS status;
 			LPSTREAM lpStream = NULL;
@@ -1173,7 +1178,6 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 
 				//Psx (Extended Process Info)
 				if (bExtended) {
-					HANDLE hProcess = NULL;
 					OBJECT_ATTRIBUTES ObjectAttributes;
 					InitializeObjectAttributes(&ObjectAttributes, NULL, 0, NULL, NULL);
 					CLIENT_ID uPid = { 0 };
@@ -1292,7 +1296,11 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 				ExitProcess(0);
 			}
 
-			if (pBuffer) {
+			if (hProcess != NULL) {
+				CloseHandle(hProcess);
+			}
+
+			if (pBuffer != NULL) {
 				NtFreeVirtualMemory(NtCurrentProcess(), &pBuffer, &uSize, MEM_RELEASE);
 			}
 			else {
@@ -1309,6 +1317,10 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 			}
 			else {
 				ExitProcess(0);
+			}
+
+			if (pwszParams != NULL) {
+				free(pwszParams);
 			}
 		}
 
