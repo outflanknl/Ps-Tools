@@ -10,21 +10,24 @@
 #include "ReflectiveLoader.h"
 #include "psk.h"
 
+#define MAX_SEC_PRD 20
+
 #pragma comment(lib,"Version.lib")
 #pragma comment(lib,"Shlwapi.lib")
 
-PSECPROD pSecProducts[64] = { 0 };
+PSECPROD pSecProducts[MAX_SEC_PRD] = { 0 };
 DWORD dwMSMod = 0, dwNonMSMod = 0, dwSecModCount = 0, dwTotalMod = 0;
 
 // You can use this value as a pseudo hinstDLL value (defined and set via ReflectiveLoader.c)
 extern HINSTANCE hAppInstance;
 
-LPWSTR Utf8toUtf16(LPSTR lpAnsiString) {
+LPWSTR Utf8ToUtf16(_In_ LPSTR lpAnsiString) {
 	INT strLen = MultiByteToWideChar(CP_UTF8, 0, lpAnsiString, -1, NULL, 0);
 	if (!strLen) {
 		return NULL;
 	}
-	LPWSTR lpWideString = (LPWSTR)calloc(1, (strLen * sizeof(wchar_t)) + 1);
+
+	LPWSTR lpWideString = (LPWSTR)calloc(strLen + 1, sizeof(WCHAR));
 	if (!lpWideString) {
 		return NULL;
 	}
@@ -43,17 +46,18 @@ BOOL OSInfo() {
 	}
 
 	osInfo.dwOSVersionInfoSize = sizeof(osInfo);
-	RtlGetVersion(&osInfo);
+	NTSTATUS status = RtlGetVersion(&osInfo);
+	if (status != STATUS_SUCCESS) {
+		return FALSE;
+	}
 
 	wprintf(L"\n[+] Windows OS Version: %u.%u build %u\n", osInfo.dwMajorVersion, osInfo.dwMinorVersion, osInfo.dwBuildNumber);
 
 	return TRUE;
 }
 
-void EnumSecurityProc(LPWSTR lpCompany, LPWSTR lpDescription) {
-	pSecProducts[dwSecModCount] = (PSECPROD)calloc(1, sizeof(SECPROD));
-
-	LPCWSTR pwszCompany[26];
+BOOL EnumSecurityProc(IN LPWSTR lpCompany, IN LPWSTR lpDescription) {
+	LPWSTR pwszCompany[26];
 	pwszCompany[0] = L"ESET";
 	pwszCompany[1] = L"McAfee";
 	pwszCompany[2] = L"Symantec";
@@ -81,19 +85,31 @@ void EnumSecurityProc(LPWSTR lpCompany, LPWSTR lpDescription) {
 	pwszCompany[24] = L"Cybereason";
 	pwszCompany[25] = L"Ivanti";
 
-	for (DWORD i = 0; i < 26; i++) {
+	const DWORD dwSize = _countof(pwszCompany);
+	for (DWORD i = 0; i < dwSize && dwSecModCount < MAX_SEC_PRD; i++) {
 		if (StrStrIW(lpCompany, pwszCompany[i])) {
-			pSecProducts[dwSecModCount]->lpCompany = lpCompany;
-			pSecProducts[dwSecModCount]->lpDescription = lpDescription;
+			RtlCopyMemory(pSecProducts[dwSecModCount]->wcCompany, lpCompany, wcslen(lpCompany) * sizeof(WCHAR));
+			RtlCopyMemory(pSecProducts[dwSecModCount]->wcDescription, lpDescription, wcslen(lpDescription) * sizeof(WCHAR));
 			dwSecModCount++;
 		}
 	}
 
-	//Windows Defender (ATP)
-	if (StrStrIW(lpDescription, L"Antimalware") || StrStrIW(lpDescription, L"Windows Defender")) {
-		pSecProducts[dwSecModCount]->lpCompany = lpCompany;
-		pSecProducts[dwSecModCount]->lpDescription = lpDescription;
-		dwSecModCount++;
+	if (dwSecModCount < MAX_SEC_PRD) {
+		//Windows Defender (ATP)
+		if (StrStrIW(lpDescription, L"Antimalware") || StrStrIW(lpDescription, L"Windows Defender")) {
+			RtlCopyMemory(pSecProducts[dwSecModCount]->wcCompany, lpCompany, wcslen(lpCompany) * sizeof(WCHAR));
+			RtlCopyMemory(pSecProducts[dwSecModCount]->wcDescription, lpDescription, wcslen(lpDescription) * sizeof(WCHAR));
+			dwSecModCount++;
+		}
+	}
+
+	if (dwSecModCount < MAX_SEC_PRD) {
+		//Carbon Black
+		if (StrStrIW(lpDescription, L"Carbon Black")) {
+			RtlCopyMemory(pSecProducts[dwSecModCount]->wcCompany, lpCompany, wcslen(lpCompany) * sizeof(WCHAR));
+			RtlCopyMemory(pSecProducts[dwSecModCount]->wcDescription, lpDescription, wcslen(lpDescription) * sizeof(WCHAR));
+			dwSecModCount++;
+		}
 	}
 
 	//Microsoft
@@ -104,13 +120,21 @@ void EnumSecurityProc(LPWSTR lpCompany, LPWSTR lpDescription) {
 		dwNonMSMod++;
 	}
 
-	return;
+	RtlZeroMemory(pwszCompany, sizeof(pwszCompany));
+
+	return TRUE;
 }
 
 BOOL EnumKernel() {
+	BOOL bResult = TRUE;
+	HANDLE hFile = NULL;
 	LPVOID moduleBase = NULL;
 	LPWSTR lpwModulePath = NULL;
 	DWORD dwBinaryType = SCS_32BIT_BINARY;
+	PBYTE lpVerInfo = NULL;
+	LPWSTR lpCompany = NULL;
+	LPWSTR lpDescription = NULL;
+	LPWSTR lpProductVersion = NULL;
 
 	_NtQuerySystemInformation NtQuerySystemInformation = (_NtQuerySystemInformation)
 		GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtQuerySystemInformation");
@@ -144,7 +168,7 @@ BOOL EnumKernel() {
 
 	ULONG uReturnLength = 0;
 	NTSTATUS status = NtQuerySystemInformation(SystemModuleInformation, 0, 0, &uReturnLength);
-	if (!status == 0xc0000004) {
+	if (!(status == STATUS_INFO_LENGTH_MISMATCH)) {
 		return FALSE;
 	}
 
@@ -157,19 +181,19 @@ BOOL EnumKernel() {
 
 	status = NtQuerySystemInformation(SystemModuleInformation, pBuffer, uReturnLength, &uReturnLength);
 	if (status != STATUS_SUCCESS) {
-		return FALSE;
+		bResult = FALSE;
+		goto CleanUp;
 	}
 
 	PSYSTEM_MODULE_INFORMATION pModuleInfo = (PSYSTEM_MODULE_INFORMATION)pBuffer;
 	dwTotalMod = pModuleInfo->NumberOfModules;
 
 	for (DWORD i = 0; i < pModuleInfo->NumberOfModules; i++) {
-		lpwModulePath = Utf8toUtf16(pModuleInfo->Module[i].FullPathName);
+		lpwModulePath = Utf8ToUtf16(pModuleInfo->Module[i].FullPathName);
 		if (lpwModulePath != NULL) {
 			UNICODE_STRING uKernel;
 			RtlInitUnicodeString(&uKernel, lpwModulePath);
 
-			HANDLE hFile = NULL;
 			IO_STATUS_BLOCK IoStatusBlock;
 			ZeroMemory(&IoStatusBlock, sizeof(IoStatusBlock));
 			OBJECT_ATTRIBUTES FileObjectAttributes;
@@ -179,7 +203,8 @@ BOOL EnumKernel() {
 				0, FILE_SHARE_READ, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0);
 
 			if (hFile == INVALID_HANDLE_VALUE) {
-				return FALSE;
+				bResult = FALSE;
+				goto CleanUp;
 			}
 
 			if (hFile == NULL) {
@@ -189,47 +214,47 @@ BOOL EnumKernel() {
 			WCHAR lpszFilePath[MAX_PATH + 1];
 			DWORD dwResult = GetFinalPathNameByHandle(hFile, lpszFilePath, _countof(lpszFilePath) - 1, VOLUME_NAME_DOS);
 			if (dwResult == 0) {
-				CloseHandle(hFile);
-				return FALSE;
+				bResult = FALSE;
+				goto CleanUp;
 			}
 			else if (dwResult >= _countof(lpszFilePath)) {
-				CloseHandle(hFile);
-				return FALSE;
+				bResult = FALSE;
+				goto CleanUp;
 			}
 
 			LPWSTR pwszPath = NULL;
 			wcstok_s(lpszFilePath, L"\\", &pwszPath);
 
 			if (i == 0) {
-				wprintf(L"    Path:\t %s\n", pwszPath);
+				wprintf(L"    Path:          %s\n", pwszPath);
 			}
 			else {
-				wprintf(L"[+] ModulePath:\t %s\n", pwszPath);
+				wprintf(L"[+] ModulePath:    %s\n", pwszPath);
 			}
 
 			moduleBase = pModuleInfo->Module[i].ImageBase;
-			wprintf(L"    BaseAddress:\t 0x%p \n", moduleBase);
+			wprintf(L"    BaseAddress:   0x%p \n", moduleBase);
 
 			if (GetBinaryType(pwszPath, &dwBinaryType)) {
 				if (dwBinaryType == SCS_64BIT_BINARY) {
-					wprintf(L"    ImageType:\t 64-bit\n");
+					wprintf(L"    ImageType:     64-bit\n");
 				}
 				else {
-					wprintf(L"    ImageType:\t 32-bit\n");
+					wprintf(L"    ImageType:     32-bit\n");
 				}
 			}
 
 			DWORD dwHandle;
 			DWORD dwLen = GetFileVersionInfoSize(pwszPath, &dwHandle);
 			if (!dwLen) {
-				CloseHandle(hFile);
-				return FALSE;
+				bResult = FALSE;
+				goto CleanUp;
 			}
 
-			PBYTE lpVerInfo = (PBYTE)calloc(dwLen, sizeof(BYTE));
+			lpVerInfo = (PBYTE)GlobalAlloc(GPTR, dwLen);
 			if (!GetFileVersionInfo(pwszPath, dwHandle, dwLen, lpVerInfo)) {
-				CloseHandle(hFile);
-				return FALSE;
+				bResult = FALSE;
+				goto CleanUp;
 			}
 
 			struct LANGANDCODEPAGE {
@@ -238,46 +263,72 @@ BOOL EnumKernel() {
 			} *lpTranslate;
 
 			WCHAR wcCodePage[MAX_PATH] = { 0 };
-			LPWSTR lpCompany = (LPWSTR)calloc(MAX_PATH, sizeof(WCHAR));
-			LPWSTR lpDescription = (LPWSTR)calloc(MAX_PATH, sizeof(WCHAR));
-			LPWSTR lpProductVersion = (LPWSTR)calloc(MAX_PATH, sizeof(WCHAR));
-			UINT uLen;
+			WCHAR wcCompanyName[MAX_PATH] = { 0 };
+			WCHAR wcDescription[MAX_PATH] = { 0 };
+			WCHAR wcProductVersion[MAX_PATH] = { 0 };
 
+			UINT uLen;
 			if (VerQueryValue(lpVerInfo, L"\\VarFileInfo\\Translation", (void **)&lpTranslate, &uLen)) {
 				swprintf_s(wcCodePage, _countof(wcCodePage), L"%04x%04x", lpTranslate->wLanguage, lpTranslate->wCodePage);
 
-				lstrcat(lpCompany, L"\\StringFileInfo\\");
-				lstrcat(lpCompany, wcCodePage);
-				lstrcat(lpCompany, L"\\CompanyName");
+				wcscat_s(wcCompanyName, _countof(wcCompanyName), L"\\StringFileInfo\\");
+				wcscat_s(wcCompanyName, _countof(wcCompanyName), wcCodePage);
+				wcscat_s(wcCompanyName, _countof(wcCompanyName), L"\\CompanyName");
 
-				lstrcat(lpDescription, L"\\StringFileInfo\\");
-				lstrcat(lpDescription, wcCodePage);
-				lstrcat(lpDescription, L"\\FileDescription");
+				wcscat_s(wcDescription, _countof(wcDescription), L"\\StringFileInfo\\");
+				wcscat_s(wcDescription, _countof(wcDescription), wcCodePage);
+				wcscat_s(wcDescription, _countof(wcDescription), L"\\FileDescription");
 
-				lstrcat(lpProductVersion, L"\\StringFileInfo\\");
-				lstrcat(lpProductVersion, wcCodePage);
-				lstrcat(lpProductVersion, L"\\ProductVersion");
+				wcscat_s(wcProductVersion, _countof(wcProductVersion), L"\\StringFileInfo\\");
+				wcscat_s(wcProductVersion, _countof(wcProductVersion), wcCodePage);
+				wcscat_s(wcProductVersion, _countof(wcProductVersion), L"\\ProductVersion");
 
-				if (VerQueryValue(lpVerInfo, lpCompany, (void **)&lpCompany, &uLen)) {
-					wprintf(L"    CompanyName:\t %s\n", lpCompany);
+				if (VerQueryValue(lpVerInfo, wcCompanyName, (void **)&lpCompany, &uLen)) {
+					wprintf(L"    CompanyName:   %ls\n", lpCompany);
 				}
-				if (VerQueryValue(lpVerInfo, lpDescription, (void **)&lpDescription, &uLen)) {
-					wprintf(L"    Description:\t %s\n", lpDescription);
+				if (VerQueryValue(lpVerInfo, wcDescription, (void **)&lpDescription, &uLen)) {
+					wprintf(L"    Description:   %ls\n", lpDescription);
 				}
-				if (VerQueryValue(lpVerInfo, lpProductVersion, (void **)&lpProductVersion, &uLen)) {
-					wprintf(L"    Version:\t %s\n\n", lpProductVersion);
+				if (VerQueryValue(lpVerInfo, wcProductVersion, (void **)&lpProductVersion, &uLen)) {
+					wprintf(L"    Version:       %ls\n\n", lpProductVersion);
 				}
 
 				EnumSecurityProc(lpCompany, lpDescription);
 			}
 
-			CloseHandle(hFile);
+			if (hFile != NULL && hFile != INVALID_HANDLE_VALUE) {
+				CloseHandle(hFile);
+			}
+
+			if (lpVerInfo != NULL) {
+				GlobalFree(lpVerInfo);
+			}
+
+			if (lpwModulePath != NULL) {
+				free(lpwModulePath);
+			}
 		}
 	}
 
-	status = NtFreeVirtualMemory(NtCurrentProcess(), &pBuffer, &uSize, MEM_RELEASE);
+CleanUp:
 
-	return TRUE;
+	if (pBuffer) {
+		status = NtFreeVirtualMemory(NtCurrentProcess(), &pBuffer, &uSize, MEM_RELEASE);
+	}
+
+	if (hFile != NULL && hFile != INVALID_HANDLE_VALUE) {
+		CloseHandle(hFile);
+	}
+
+	if (lpVerInfo != NULL) {
+		GlobalFree(lpVerInfo);
+	}
+
+	if (lpwModulePath != NULL) {
+		free(lpwModulePath);
+	}
+
+	return bResult;
 }
 
 
@@ -327,18 +378,18 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 			_RtlInitUnicodeString RtlInitUnicodeString = (_RtlInitUnicodeString)
 				GetProcAddress(GetModuleHandle(L"ntdll.dll"), "RtlInitUnicodeString");
 			if (RtlInitUnicodeString == NULL) {
-				return FALSE;
+				exit(1);
 			}
 
 			_RtlEqualUnicodeString RtlEqualUnicodeString = (_RtlEqualUnicodeString)
 				GetProcAddress(GetModuleHandle(L"ntdll.dll"), "RtlEqualUnicodeString");
 			if (RtlEqualUnicodeString == NULL) {
-				return FALSE;
+				exit(1);
 			}
 
 			ULONG uReturnLength = 0;
 			NTSTATUS status = NtQuerySystemInformation(SystemProcessInformation, 0, 0, &uReturnLength);
-			if (!status == 0xc0000004) {
+			if (!(status == STATUS_INFO_LENGTH_MISMATCH)) {
 				exit(1);
 			}
 
@@ -354,6 +405,10 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 				exit(1);
 			}
 
+			for (DWORD i = 0; i < MAX_SEC_PRD; i++) {
+				pSecProducts[i] = (PSECPROD)calloc(1, sizeof(SECPROD));
+			}
+
 			if (!OSInfo()) {
 				wprintf(L"\n[!] OSInfo Failed!\n\n");
 			}
@@ -362,9 +417,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 			do {
 				pProcInfo = (PSYSTEM_PROCESSES)(((LPBYTE)pProcInfo) + pProcInfo->NextEntryDelta);
 
-				wprintf(L"\n[+] ProcessName:\t %wZ\n", &pProcInfo->ProcessName);
-				wprintf(L"    ProcessID:\t %d\n", (DWORD)pProcInfo->ProcessId);
-				wprintf(L"    PPID:\t %d ", (DWORD)pProcInfo->InheritedFromProcessId);
+				wprintf(L"\n[+] ProcessName:   %wZ\n", &pProcInfo->ProcessName);
+				wprintf(L"    ProcessID:     %d\n", (DWORD)pProcInfo->ProcessId);
+				wprintf(L"    PPID:          %d ", (DWORD)pProcInfo->InheritedFromProcessId);
 
 				PSYSTEM_PROCESSES pParentInfo = (PSYSTEM_PROCESSES)pBuffer;
 				do {
@@ -387,11 +442,11 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 				// Convert the Createtime to local time.
 				FileTimeToSystemTime(&ftCreate, &stUTC);
 				if (SystemTimeToTzSpecificLocalTime(NULL, &stUTC, &stLocal)) {
-					wprintf(L"    CreateTime:\t %02d/%02d/%d %02d:%02d\n", stLocal.wDay, stLocal.wMonth, stLocal.wYear, stLocal.wHour, stLocal.wMinute);
+					wprintf(L"    CreateTime:    %02d/%02d/%d %02d:%02d\n", stLocal.wDay, stLocal.wMonth, stLocal.wYear, stLocal.wHour, stLocal.wMinute);
 				}
 
 				if (ProcessIdToSessionId((DWORD)pProcInfo->ProcessId, &SessionID)) {
-					wprintf(L"    SessionID:\t %d\n", SessionID);
+					wprintf(L"    SessionID:     %d\n", SessionID);
 				}
 
 				if ((DWORD)pProcInfo->ProcessId == 4) {
@@ -405,14 +460,12 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 
 			} while (pProcInfo);
 
-			status = NtFreeVirtualMemory(NtCurrentProcess(), &pBuffer, &uSize, MEM_RELEASE);
-
 			if (dwSecModCount > 0) {
 				wprintf(L"--------------------------------------------------------------------\n");
 				wprintf(L"[!] Security products found:\n");
 				for (DWORD i = 0; i < dwSecModCount; i++) {
-					wprintf(L"    Vendor:\t %ls\n", pSecProducts[i]->lpCompany);
-					wprintf(L"    Product:\t %ls\n\n", pSecProducts[i]->lpDescription);
+					wprintf(L"    Vendor:        %ls\n", pSecProducts[i]->wcCompany);
+					wprintf(L"    Product:       %ls\n\n", pSecProducts[i]->wcDescription);
 				}
 			}
 
@@ -422,6 +475,23 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 			wprintf(L"    Non Microsoft modules:    %d\n\n", dwNonMSMod);
 
 			wprintf(L"    Total active modules:     %d\n\n", dwTotalMod);
+
+			if (pBuffer != NULL) {
+				NtFreeVirtualMemory(NtCurrentProcess(), &pBuffer, &uSize, MEM_RELEASE);
+			}
+
+			if (pSecProducts[0] != NULL) {
+				for (DWORD i = 0; i < MAX_SEC_PRD; i++) {
+					free(pSecProducts[i]);
+				}
+				dwNonMSMod = 0;
+				dwMSMod = 0;
+				dwSecModCount = 0;
+			}
+
+			if (pwszParams != NULL) {
+				free(pwszParams);
+			}
 		}
 
 		// Flush STDOUT

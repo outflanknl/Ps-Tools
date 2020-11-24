@@ -5,6 +5,7 @@
 
 #define STATUS_SUCCESS 0
 #define STATUS_BUFFER_TOO_SMALL 0xC0000023
+#define STATUS_INFO_LENGTH_MISMATCH 0xC0000004
 #define MAX_NAME 256
 typedef LONG KPRIORITY;
 
@@ -104,10 +105,9 @@ typedef struct _IO_STATUS_BLOCK
 } IO_STATUS_BLOCK, *PIO_STATUS_BLOCK;
 
 typedef struct _SECPROD {
-	LPWSTR lpCompany;
-	LPWSTR lpDescription;
+	WCHAR wcCompany[MAX_PATH];
+	WCHAR wcDescription[MAX_PATH];
 } SECPROD, *PSECPROD;
-
 
 typedef void (WINAPI * PIO_APC_ROUTINE)(PVOID, PIO_STATUS_BLOCK, ULONG);
 
