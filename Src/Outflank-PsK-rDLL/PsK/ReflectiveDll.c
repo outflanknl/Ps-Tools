@@ -194,6 +194,7 @@ BOOL EnumKernel() {
 			UNICODE_STRING uKernel;
 			RtlInitUnicodeString(&uKernel, lpwModulePath);
 
+			hFile = NULL;
 			IO_STATUS_BLOCK IoStatusBlock;
 			ZeroMemory(&IoStatusBlock, sizeof(IoStatusBlock));
 			OBJECT_ATTRIBUTES FileObjectAttributes;
@@ -204,10 +205,12 @@ BOOL EnumKernel() {
 
 			if (hFile == NULL && Status != STATUS_SUCCESS) {
 				free(lpwModulePath);
+				lpwModulePath = NULL;
 				continue;
 			}
 			else if (hFile == INVALID_HANDLE_VALUE && Status != STATUS_SUCCESS) {
 				free(lpwModulePath);
+				lpwModulePath = NULL;
 				continue;
 			}
 
@@ -249,6 +252,8 @@ BOOL EnumKernel() {
 			if (!dwLen) {
 				CloseHandle(hFile);
 				free(lpwModulePath);
+				lpwModulePath = NULL;
+				wprintf(L"\n");
 				continue;
 			}
 
@@ -299,14 +304,17 @@ BOOL EnumKernel() {
 
 			if (hFile != NULL && hFile != INVALID_HANDLE_VALUE) {
 				CloseHandle(hFile);
+				hFile = NULL;
 			}
 
 			if (lpVerInfo != NULL) {
 				GlobalFree(lpVerInfo);
+				lpVerInfo = NULL;
 			}
 
 			if (lpwModulePath != NULL) {
 				free(lpwModulePath);
+				lpwModulePath = NULL;
 			}
 		}
 	}
