@@ -202,12 +202,12 @@ BOOL EnumKernel() {
 			NTSTATUS Status = NtCreateFile(&hFile, (GENERIC_READ | SYNCHRONIZE), &FileObjectAttributes, &IoStatusBlock, 0,
 				0, FILE_SHARE_READ, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0);
 
-			if (hFile == INVALID_HANDLE_VALUE) {
-				bResult = FALSE;
-				goto CleanUp;
+			if (hFile == NULL && Status != STATUS_SUCCESS) {
+				free(lpwModulePath);
+				continue;
 			}
-
-			if (hFile == NULL) {
+			else if (hFile == INVALID_HANDLE_VALUE && Status != STATUS_SUCCESS) {
+				free(lpwModulePath);
 				continue;
 			}
 
@@ -247,8 +247,9 @@ BOOL EnumKernel() {
 			DWORD dwHandle;
 			DWORD dwLen = GetFileVersionInfoSize(pwszPath, &dwHandle);
 			if (!dwLen) {
-				bResult = FALSE;
-				goto CleanUp;
+				CloseHandle(hFile);
+				free(lpwModulePath);
+				continue;
 			}
 
 			lpVerInfo = (PBYTE)GlobalAlloc(GPTR, dwLen);

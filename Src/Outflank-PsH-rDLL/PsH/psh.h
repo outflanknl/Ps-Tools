@@ -5,6 +5,7 @@
 
 #define STATUS_SUCCESS 0
 #define STATUS_BUFFER_TOO_SMALL 0xC0000023
+#define STATUS_INFO_LENGTH_MISMATCH 0xC0000004
 #define MAX_NAME 256
 typedef LONG KPRIORITY;
 
@@ -24,6 +25,13 @@ typedef LONG KPRIORITY;
       (i)->SecurityDescriptor = s;                       \
       (i)->SecurityQualityOfService = NULL;              \
    }
+
+enum IntegLevel {
+	LowIntegrity = 1,
+	MediumIntegrity = 2,
+	HighIntegrity = 3,
+	SystemIntegrity = 4
+};
 
 typedef struct _UNICODE_STRING {
 	USHORT Length;
@@ -311,6 +319,15 @@ typedef NTSTATUS(NTAPI *_NtAdjustPrivilegesToken)(
 	IN ULONG PreviousPrivilegesLength,
 	OUT PTOKEN_PRIVILEGES PreviousPrivileges OPTIONAL,
 	OUT PULONG RequiredLength OPTIONAL
+	);
+
+typedef NTSYSAPI PULONG(NTAPI *_RtlSubAuthoritySid)(
+	PSID  Sid,
+	ULONG SubAuthority
+	);
+
+typedef NTSYSAPI PUCHAR(NTAPI *_RtlSubAuthorityCountSid)(
+	_In_ PSID Sid
 	);
 
 typedef NTSTATUS(NTAPI *_NtQueryInformationProcess)(

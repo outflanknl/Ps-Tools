@@ -16,15 +16,18 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib,"Version.lib") 
 
+#define MAX_BUF 8192
+
 // You can use this value as a pseudo hinstDLL value (defined and set via ReflectiveLoader.c)
 extern HINSTANCE hAppInstance;
 
-LPWSTR Utf8toUtf16(LPSTR lpAnsiString) {
+LPWSTR Utf8ToUtf16(_In_ LPSTR lpAnsiString) {
 	INT strLen = MultiByteToWideChar(CP_UTF8, 0, lpAnsiString, -1, NULL, 0);
 	if (!strLen) {
 		return NULL;
 	}
-	LPWSTR lpWideString = (LPWSTR)calloc(1, (strLen * sizeof(wchar_t)) + 1);
+
+	LPWSTR lpWideString = (LPWSTR)calloc(strLen + 1, sizeof(WCHAR));
 	if (!lpWideString) {
 		return NULL;
 	}
@@ -59,27 +62,43 @@ BOOL IsElevated() {
 			fRet = Elevation.TokenIsElevated;
 		}
 	}
-	if (hToken) {
+
+	if (hToken != NULL) {
 		CloseHandle(hToken);
 	}
+
 	return fRet;
 }
 
-DWORD IntegrityLevel(HANDLE hProcess) {
+DWORD IntegrityLevel(IN HANDLE hProcess) {
 	HANDLE hToken = NULL;
 	ULONG ReturnLength;
+	PTOKEN_MANDATORY_LABEL pTIL = NULL;
 	DWORD dwIntegrityLevel;
+	DWORD dwRet = 0;
 
 	_NtOpenProcessToken NtOpenProcessToken = (_NtOpenProcessToken)
 		GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtOpenProcessToken");
 	if (NtOpenProcessToken == NULL) {
-		return FALSE;
+		return 0;
 	}
 
 	_NtQueryInformationToken NtQueryInformationToken = (_NtQueryInformationToken)
 		GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtQueryInformationToken");
 	if (NtQueryInformationToken == NULL) {
-		return FALSE;
+		return 0;
+	}
+
+	_RtlSubAuthoritySid RtlSubAuthoritySid = (_RtlSubAuthoritySid)
+		GetProcAddress(GetModuleHandle(L"ntdll.dll"), "RtlSubAuthoritySid");
+	if (RtlSubAuthoritySid == NULL) {
+		return 0;
+	}
+
+	_RtlSubAuthorityCountSid RtlSubAuthorityCountSid = (_RtlSubAuthorityCountSid)
+		GetProcAddress(GetModuleHandle(L"ntdll.dll"), "RtlSubAuthorityCountSid");
+	if (RtlSubAuthorityCountSid == NULL) {
+		return 0;
 	}
 
 	NTSTATUS status = NtOpenProcessToken(hProcess, TOKEN_QUERY, &hToken);
@@ -87,27 +106,46 @@ DWORD IntegrityLevel(HANDLE hProcess) {
 
 		status = NtQueryInformationToken(hToken, TokenIntegrityLevel, NULL, 0, &ReturnLength);
 		if (status != STATUS_BUFFER_TOO_SMALL) {
-			CloseHandle(hToken);
-			return 0;
+			goto CleanUp;
 		}
 
-		PTOKEN_MANDATORY_LABEL pTIL = (PTOKEN_MANDATORY_LABEL)GlobalAlloc(GPTR, ReturnLength);
+		pTIL = (PTOKEN_MANDATORY_LABEL)GlobalAlloc(GPTR, ReturnLength);
 
 		status = NtQueryInformationToken(hToken, TokenIntegrityLevel, pTIL, ReturnLength, &ReturnLength);
 		if (status != STATUS_SUCCESS) {
-			CloseHandle(hToken);
-			return 0;
+			goto CleanUp;
 		}
 
-		dwIntegrityLevel = *GetSidSubAuthority(pTIL->Label.Sid, (DWORD)(UCHAR)(*GetSidSubAuthorityCount(pTIL->Label.Sid) - 1));
+		dwIntegrityLevel = *RtlSubAuthoritySid(pTIL->Label.Sid, (DWORD)(UCHAR)(*RtlSubAuthorityCountSid(pTIL->Label.Sid) - 1));
 
-		GlobalFree(pTIL);
-		CloseHandle(hToken);
-
-		return dwIntegrityLevel;
+		if (dwIntegrityLevel == SECURITY_MANDATORY_LOW_RID) {
+			dwRet = LowIntegrity;
+		}
+		else if (dwIntegrityLevel >= SECURITY_MANDATORY_MEDIUM_RID && dwIntegrityLevel < SECURITY_MANDATORY_HIGH_RID) {
+			dwRet = MediumIntegrity;
+		}
+		else if (dwIntegrityLevel >= SECURITY_MANDATORY_HIGH_RID && dwIntegrityLevel < SECURITY_MANDATORY_SYSTEM_RID) {
+			dwRet = HighIntegrity;
+		}
+		else if (dwIntegrityLevel >= SECURITY_MANDATORY_SYSTEM_RID) {
+			dwRet = SystemIntegrity;
+		}
+		else {
+			goto CleanUp;
+		}
 	}
 
-	return 0;
+CleanUp:
+
+	if (hToken != NULL) {
+		CloseHandle(hToken);
+	}
+
+	if (pTIL != NULL) {
+		GlobalFree(pTIL);
+	}
+
+	return dwRet;
 }
 
 BOOL SetDebugPrivilege() {
@@ -140,8 +178,8 @@ BOOL SetDebugPrivilege() {
 	TokenPrivileges.PrivilegeCount = 1;
 	TokenPrivileges.Privileges[0].Attributes = TRUE ? SE_PRIVILEGE_ENABLED : 0;
 
-	LPWSTR lpwPriv = L"SeDebugPrivilege";
-	if (!LookupPrivilegeValueW(NULL, (LPCWSTR)lpwPriv, &TokenPrivileges.Privileges[0].Luid)) {
+	LPCWSTR lpwPriv = L"SeDebugPrivilege";
+	if (!LookupPrivilegeValueW(NULL, lpwPriv, &TokenPrivileges.Privileges[0].Luid)) {
 		CloseHandle(hToken);
 		return FALSE;
 	}
@@ -153,15 +191,18 @@ BOOL SetDebugPrivilege() {
 	}
 
 	CloseHandle(hToken);
+
 	return TRUE;
 }
 
-LPWSTR GetTokenUser(HANDLE hProcess) {
+LPWSTR GetProcessUser(IN HANDLE hProcess, BOOL bCloseHandle, BOOL bReturnDomainname, BOOL bReturnUsername) {
 	HANDLE hToken = NULL;
 	ULONG ReturnLength;
+	PTOKEN_USER Ptoken_User = NULL;
 	WCHAR lpName[MAX_NAME];
 	WCHAR lpDomain[MAX_NAME];
 	DWORD dwSize = MAX_NAME;
+	LPWSTR lpwUser = NULL;
 	SID_NAME_USE SidType;
 
 	_NtOpenProcessToken NtOpenProcessToken = (_NtOpenProcessToken)
@@ -180,37 +221,52 @@ LPWSTR GetTokenUser(HANDLE hProcess) {
 	if (status == STATUS_SUCCESS) {
 		status = NtQueryInformationToken(hToken, TokenUser, NULL, 0, &ReturnLength);
 		if (status != STATUS_BUFFER_TOO_SMALL) {
-			CloseHandle(hToken);
-			return NULL;
+			goto CleanUp;
 		}
 
-		PTOKEN_USER Ptoken_User = (PTOKEN_USER)GlobalAlloc(GPTR, ReturnLength);
+		Ptoken_User = (PTOKEN_USER)GlobalAlloc(GPTR, ReturnLength);
 
 		status = NtQueryInformationToken(hToken, TokenUser, Ptoken_User, ReturnLength, &ReturnLength);
 		if (status != STATUS_SUCCESS) {
-			CloseHandle(hToken);
-			return NULL;
+			goto CleanUp;
 		}
 
-		if (!LookupAccountSid(NULL, Ptoken_User->User.Sid, lpName, &dwSize, lpDomain, &dwSize, &SidType))
-		{
-			GlobalFree(Ptoken_User);
-			CloseHandle(hToken);
-			return NULL;
+		if (!LookupAccountSid(NULL, Ptoken_User->User.Sid, lpName, &dwSize, lpDomain, &dwSize, &SidType)) {
+			goto CleanUp;
 		}
 
-		LPWSTR lpUser = (LPWSTR)calloc(MAX_NAME, 1);
-		wcscat_s(lpUser, MAX_NAME, lpDomain);
-		wcscat_s(lpUser, MAX_NAME, L"\\");
-		wcscat_s(lpUser, MAX_NAME, lpName);
-
-		GlobalFree(Ptoken_User);
-		CloseHandle(hToken);
-
-		return lpUser;
+		lpwUser = (LPWSTR)calloc(MAX_NAME, sizeof(WCHAR));
+		if (lpwUser != NULL) {
+			if (bReturnDomainname) {
+				wcscat_s(lpwUser, MAX_NAME, lpDomain);
+				if (bReturnUsername) {
+					wcscat_s(lpwUser, MAX_NAME, L"\\");
+				}
+			}
+			if (bReturnUsername) {
+				wcscat_s(lpwUser, MAX_NAME, lpName);
+			}
+		}
 	}
 
-	return NULL;
+CleanUp:
+
+	RtlSecureZeroMemory(lpName, MAX_NAME * sizeof(WCHAR));
+	RtlSecureZeroMemory(lpDomain, MAX_NAME * sizeof(WCHAR));
+
+	if (hProcess != NULL && bCloseHandle) {
+		CloseHandle(hProcess);
+	}
+
+	if (hToken != NULL) {
+		GlobalFree(Ptoken_User);
+		CloseHandle(hToken);
+	}
+	else {
+		return NULL;
+	}
+
+	return lpwUser;
 }
 
 BOOL EnumObjectHandles(HANDLE hProcess, DWORD dwPid) {
@@ -327,24 +383,34 @@ BOOL EnumObjectHandles(HANDLE hProcess, DWORD dwPid) {
 			objectName = *(PUNICODE_STRING)objectNameInfo;
 			if (objectName.Buffer != NULL) {
 				if (dwCount == 0) {
-					wprintf(L"\n[+] Handle:\t 0x%x\n", objHandle.Handle);
+					wprintf(L"\n[+] Handle:      0x%x\n", objHandle.Handle);
 					dwCount++;
 				}
 				else {
-					wprintf(L"    Handle:\t 0x%x\n", objHandle.Handle);
+					wprintf(L"    Handle:      0x%x\n", objHandle.Handle);
 				}
 
-				wprintf(L"    HandleType:\t %wZ\n", &objectTypeInfo->Name);
-				wprintf(L"    HandleName:\t %wZ\n\n", &objectName);
+				wprintf(L"    HandleType:  %wZ\n", &objectTypeInfo->Name);
+				wprintf(L"    HandleName:  %wZ\n\n", &objectName);
 			}
 
-			status = NtFreeVirtualMemory(NtCurrentProcess(), &objectTypeInfo, &uSize, MEM_RELEASE);
-			status = NtFreeVirtualMemory(NtCurrentProcess(), &objectNameInfo, &uSize, MEM_RELEASE);
-			CloseHandle(dupObjHandle);
+			if (objectTypeInfo != NULL) {
+				status = NtFreeVirtualMemory(NtCurrentProcess(), &objectTypeInfo, &uSize, MEM_RELEASE);
+			}
+
+			if (objectNameInfo != NULL) {
+				status = NtFreeVirtualMemory(NtCurrentProcess(), &objectNameInfo, &uSize, MEM_RELEASE);
+			}
+
+			if (dupObjHandle != NULL) {
+				CloseHandle(dupObjHandle);
+			}
 		}
 	}
 
-	status = NtFreeVirtualMemory(NtCurrentProcess(), &pBuffer, &uSize, MEM_RELEASE);
+	if (pBuffer) {
+		status = NtFreeVirtualMemory(NtCurrentProcess(), &pBuffer, &uSize, MEM_RELEASE);
+	}
 
 	return TRUE;
 }
@@ -353,8 +419,8 @@ BOOL EnumPeb(HANDLE hProcess) {
 	PROCESS_BASIC_INFORMATION pbi;
 	PEB peb;
 	RTL_USER_PROCESS_PARAMETERS upp;
-	WCHAR wcPathName[MAX_PATH] = { 0 };
-	WCHAR wcCmdLine[8191] = { 0 };
+	WCHAR wcPathName[MAX_BUF * 4] = { 0 };
+	WCHAR wcCmdLine[MAX_BUF * 4] = { 0 };
 
 	_NtQueryInformationProcess NtQueryInformationProcess = (_NtQueryInformationProcess)
 		GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtQueryInformationProcess");
@@ -373,7 +439,7 @@ BOOL EnumPeb(HANDLE hProcess) {
 		return FALSE;
 	}
 
-	wprintf(L"    PEB Address:\t 0x%p\n", pbi.PebBaseAddress);
+	wprintf(L"    PEB Address: 0x%p\n", pbi.PebBaseAddress);
 
 	status = NtReadVirtualMemory(hProcess, pbi.PebBaseAddress, &peb, sizeof(peb), NULL);
 	if (status != STATUS_SUCCESS) {
@@ -395,25 +461,33 @@ BOOL EnumPeb(HANDLE hProcess) {
 		return FALSE;
 	}
 
-	wprintf(L"    ImagePath:\t %s\n", wcPathName);
-	wprintf(L"    CommandLine:\t %s\n", wcCmdLine);
+	wprintf(L"    ImagePath:   %ls\n", wcPathName);
+	wprintf(L"    CommandLine: %ls\n", wcCmdLine);
 
 	return TRUE;
 }
 
-BOOL EnumFileProperties(HANDLE ProcessId) {
+BOOL EnumFileProperties(IN HANDLE ProcessId) {
+	NTSTATUS status;
+	DWORD dwResult;
+	WCHAR lpszFilePath[MAX_PATH] = { 0 };
+	LPWSTR pwszPath = NULL;
+	DWORD dwLen = 0;
 	SYSTEM_PROCESS_ID_INFORMATION pInfo;
+	HANDLE hFile = NULL;
 	DWORD dwBinaryType = SCS_32BIT_BINARY;
+	WCHAR wcCodePage[MAX_PATH] = { 0 };
+	WCHAR wcCompanyName[MAX_PATH] = { 0 };
+	WCHAR wcDescription[MAX_PATH] = { 0 };
+	WCHAR wcProductVersion[MAX_PATH] = { 0 };
+	PBYTE lpVerInfo = NULL;
+	LPWSTR lpCompany = NULL;
+	LPWSTR lpDescription = NULL;
+	LPWSTR lpProductVersion = NULL;
 
 	_NtQuerySystemInformation NtQuerySystemInformation = (_NtQuerySystemInformation)
 		GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtQuerySystemInformation");
 	if (NtQuerySystemInformation == NULL) {
-		return FALSE;
-	}
-
-	_NtAllocateVirtualMemory NtAllocateVirtualMemory = (_NtAllocateVirtualMemory)
-		GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtAllocateVirtualMemory");
-	if (NtAllocateVirtualMemory == NULL) {
 		return FALSE;
 	}
 
@@ -423,73 +497,61 @@ BOOL EnumFileProperties(HANDLE ProcessId) {
 		return FALSE;
 	}
 
-	_NtFreeVirtualMemory NtFreeVirtualMemory = (_NtFreeVirtualMemory)
-		GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtFreeVirtualMemory");
-	if (NtFreeVirtualMemory == NULL) {
-		return FALSE;
-	}
-
 	pInfo.ProcessId = ProcessId;
 	pInfo.ImageName.Length = 0;
-	pInfo.ImageName.MaximumLength = MAX_PATH;
+	pInfo.ImageName.MaximumLength = MAX_PATH * sizeof(WCHAR);
 	pInfo.ImageName.Buffer = NULL;
 
-	SIZE_T uSize = pInfo.ImageName.MaximumLength;
-	NTSTATUS status = NtAllocateVirtualMemory(NtCurrentProcess(), &pInfo.ImageName.Buffer, 0, &uSize, MEM_COMMIT, PAGE_READWRITE);
-	if (status != STATUS_SUCCESS) {
-		return FALSE;
-	}
+	pInfo.ImageName.Buffer = (PWSTR)calloc(pInfo.ImageName.MaximumLength, sizeof(WCHAR));
 
 	status = NtQuerySystemInformation(SystemProcessIdInformation, &pInfo, sizeof(pInfo), NULL);
 	if (status != STATUS_SUCCESS) {
-		return FALSE;
+		goto CleanUp;
 	}
 
-	HANDLE hFile = NULL;
 	IO_STATUS_BLOCK IoStatusBlock;
 	ZeroMemory(&IoStatusBlock, sizeof(IoStatusBlock));
+
 	OBJECT_ATTRIBUTES FileObjectAttributes;
 	InitializeObjectAttributes(&FileObjectAttributes, &pInfo.ImageName, OBJ_CASE_INSENSITIVE, NULL, NULL);
 
-	NTSTATUS Status = NtCreateFile(&hFile, (GENERIC_READ | SYNCHRONIZE), &FileObjectAttributes, &IoStatusBlock, 0,
+	status = NtCreateFile(&hFile, GENERIC_READ | SYNCHRONIZE, &FileObjectAttributes, &IoStatusBlock, 0,
 		0, FILE_SHARE_READ, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0);
 
-	if (hFile == INVALID_HANDLE_VALUE) {
-		return FALSE;
+	if (hFile == INVALID_HANDLE_VALUE && status != STATUS_SUCCESS) {
+		goto CleanUp;
 	}
 
-	WCHAR lpszFilePath[MAX_PATH + 1];
-	DWORD dwResult = GetFinalPathNameByHandle(hFile, lpszFilePath, _countof(lpszFilePath) - 1, VOLUME_NAME_DOS);
+	dwResult = GetFinalPathNameByHandle(hFile, lpszFilePath, _countof(lpszFilePath) - 1, VOLUME_NAME_DOS);
 	if (dwResult == 0) {
-		return FALSE;
+		goto CleanUp;
 	}
 	else if (dwResult >= _countof(lpszFilePath)) {
-		return FALSE;
+		goto CleanUp;
 	}
 
-	LPWSTR pwszPath = NULL;
 	wcstok_s(lpszFilePath, L"\\", &pwszPath);
 
-	wprintf(L"    Path:\t %s\n", pwszPath);
+	wprintf(L"    Path:        %s\n", pwszPath);
 
 	if (GetBinaryType(pwszPath, &dwBinaryType)) {
 		if (dwBinaryType == SCS_64BIT_BINARY) {
-			wprintf(L"    ImageType:\t 64-bit\n");
+			wprintf(L"    ImageType:   64-bit\n");
 		}
 		else {
-			wprintf(L"    ImageType:\t 32-bit\n");
+			wprintf(L"    ImageType:   32-bit\n");
 		}
 	}
 
 	DWORD dwHandle;
-	DWORD dwLen = GetFileVersionInfoSize(pwszPath, &dwHandle);
+	dwLen = GetFileVersionInfoSize(pwszPath, &dwHandle);
 	if (!dwLen) {
-		return FALSE;
+		goto CleanUp;
 	}
 
-	PBYTE lpVerInfo = (PBYTE)calloc(dwLen, sizeof(BYTE));
+	lpVerInfo = (PBYTE)GlobalAlloc(GPTR, dwLen);
 	if (!GetFileVersionInfo(pwszPath, dwHandle, dwLen, lpVerInfo)) {
-		return FALSE;
+		goto CleanUp;
 	}
 
 	struct LANGANDCODEPAGE {
@@ -497,49 +559,73 @@ BOOL EnumFileProperties(HANDLE ProcessId) {
 		WORD wCodePage;
 	} *lpTranslate;
 
-	WCHAR wcCodePage[MAX_PATH] = { 0 };
-	LPWSTR lpCompany = (LPWSTR)calloc(MAX_PATH, sizeof(WCHAR));
-	LPWSTR lpDescription = (LPWSTR)calloc(MAX_PATH, sizeof(WCHAR));
-	LPWSTR lpProductVersion = (LPWSTR)calloc(MAX_PATH, sizeof(WCHAR));
 	UINT uLen;
-
 	if (VerQueryValue(lpVerInfo, L"\\VarFileInfo\\Translation", (void **)&lpTranslate, &uLen)) {
 		swprintf_s(wcCodePage, _countof(wcCodePage), L"%04x%04x", lpTranslate->wLanguage, lpTranslate->wCodePage);
 
-		lstrcat(lpCompany, L"\\StringFileInfo\\");
-		lstrcat(lpCompany, wcCodePage);
-		lstrcat(lpCompany, L"\\CompanyName");
+		wcscat_s(wcCompanyName, _countof(wcCompanyName), L"\\StringFileInfo\\");
+		wcscat_s(wcCompanyName, _countof(wcCompanyName), wcCodePage);
+		wcscat_s(wcCompanyName, _countof(wcCompanyName), L"\\CompanyName");
 
-		lstrcat(lpDescription, L"\\StringFileInfo\\");
-		lstrcat(lpDescription, wcCodePage);
-		lstrcat(lpDescription, L"\\FileDescription");
+		wcscat_s(wcDescription, _countof(wcDescription), L"\\StringFileInfo\\");
+		wcscat_s(wcDescription, _countof(wcDescription), wcCodePage);
+		wcscat_s(wcDescription, _countof(wcDescription), L"\\FileDescription");
 
-		lstrcat(lpProductVersion, L"\\StringFileInfo\\");
-		lstrcat(lpProductVersion, wcCodePage);
-		lstrcat(lpProductVersion, L"\\ProductVersion");
+		wcscat_s(wcProductVersion, _countof(wcProductVersion), L"\\StringFileInfo\\");
+		wcscat_s(wcProductVersion, _countof(wcProductVersion), wcCodePage);
+		wcscat_s(wcProductVersion, _countof(wcProductVersion), L"\\ProductVersion");
 
-		if (VerQueryValue(lpVerInfo, lpCompany, (void **)&lpCompany, &uLen)) {
-			wprintf(L"    CompanyName:\t %s\n", lpCompany);
+		if (VerQueryValue(lpVerInfo, wcCompanyName, (void **)&lpCompany, &uLen)) {
+			wprintf(L"    CompanyName: %ls\n", lpCompany);
 		}
-		if (VerQueryValue(lpVerInfo, lpDescription, (void **)&lpDescription, &uLen)) {
-			wprintf(L"    Description:\t %s\n", lpDescription);
+		if (VerQueryValue(lpVerInfo, wcDescription, (void **)&lpDescription, &uLen)) {
+			wprintf(L"    Description: %ls\n", lpDescription);
 		}
-		if (VerQueryValue(lpVerInfo, lpProductVersion, (void **)&lpProductVersion, &uLen)) {
-			wprintf(L"    Version:\t %s\n", lpProductVersion);
+		if (VerQueryValue(lpVerInfo, wcProductVersion, (void **)&lpProductVersion, &uLen)) {
+			wprintf(L"    Version:     %ls\n", lpProductVersion);
 		}
 	}
 
-	status = NtFreeVirtualMemory(NtCurrentProcess(), &pInfo.ImageName.Buffer, &uSize, MEM_RELEASE);
+CleanUp:
 
-	CloseHandle(hFile);
+	if (hFile != NULL && hFile != INVALID_HANDLE_VALUE) {
+		CloseHandle(hFile);
+	}
+
+	if (pInfo.ImageName.Buffer != NULL) {
+		free(pInfo.ImageName.Buffer);
+	}
+
+	if (lpVerInfo != NULL) {
+		GlobalFree(lpVerInfo);
+	}
+	else {
+		return FALSE;
+	}
+
 	return TRUE;
 }
 
 BOOL EnumKernel() {
+	HANDLE hFile = NULL;
+	LPVOID pBuffer = NULL;
+	SIZE_T uSize = 0;
+	PSYSTEM_MODULE_INFORMATION pModuleInfo = NULL;
 	LPVOID kernelBase = NULL;
 	PUCHAR kernelImage = NULL;
 	LPWSTR lpwKernelPath = NULL;
+	WCHAR lpszFilePath[MAX_PATH] = { 0 };
+	DWORD dwLen = 0;
+	LPWSTR pwszPath = NULL;
 	DWORD dwBinaryType = SCS_32BIT_BINARY;
+	PBYTE lpVerInfo = NULL;
+	WCHAR wcCodePage[MAX_PATH] = { 0 };
+	WCHAR wcCompanyName[MAX_PATH] = { 0 };
+	WCHAR wcDescription[MAX_PATH] = { 0 };
+	WCHAR wcProductVersion[MAX_PATH] = { 0 };
+	LPWSTR lpCompany = NULL;
+	LPWSTR lpDescription = NULL;
+	LPWSTR lpProductVersion = NULL;
 
 	_NtQuerySystemInformation NtQuerySystemInformation = (_NtQuerySystemInformation)
 		GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtQuerySystemInformation");
@@ -573,81 +659,73 @@ BOOL EnumKernel() {
 
 	ULONG uReturnLength = 0;
 	NTSTATUS status = NtQuerySystemInformation(SystemModuleInformation, 0, 0, &uReturnLength);
-	if (!status == 0xc0000004) {
-		return FALSE;
+	if (!(status == STATUS_INFO_LENGTH_MISMATCH)) {
+		goto CleanUp;
 	}
 
-	LPVOID pBuffer = NULL;
-	SIZE_T uSize = uReturnLength;
+	uSize = uReturnLength;
 	status = NtAllocateVirtualMemory(NtCurrentProcess(), &pBuffer, 0, &uSize, MEM_COMMIT, PAGE_READWRITE);
 	if (status != STATUS_SUCCESS) {
-		return FALSE;
+		goto CleanUp;
 	}
 
 	status = NtQuerySystemInformation(SystemModuleInformation, pBuffer, uReturnLength, &uReturnLength);
 	if (status != STATUS_SUCCESS) {
-		return FALSE;
+		goto CleanUp;
 	}
 
-	PSYSTEM_MODULE_INFORMATION pModuleInfo = (PSYSTEM_MODULE_INFORMATION)pBuffer;
+	pModuleInfo = (PSYSTEM_MODULE_INFORMATION)pBuffer;
 	kernelBase = pModuleInfo->Module[0].ImageBase;
 	kernelImage = pModuleInfo->Module[0].FullPathName;
 
-	lpwKernelPath = Utf8toUtf16(pModuleInfo->Module[0].FullPathName);
+	lpwKernelPath = Utf8ToUtf16((LPSTR)pModuleInfo->Module[0].FullPathName);
 	if (lpwKernelPath != NULL) {
 		UNICODE_STRING uKernel;
 		RtlInitUnicodeString(&uKernel, lpwKernelPath);
 
-		HANDLE hFile = NULL;
 		IO_STATUS_BLOCK IoStatusBlock;
 		ZeroMemory(&IoStatusBlock, sizeof(IoStatusBlock));
+
 		OBJECT_ATTRIBUTES FileObjectAttributes;
 		InitializeObjectAttributes(&FileObjectAttributes, &uKernel, OBJ_CASE_INSENSITIVE, NULL, NULL);
 
-		NTSTATUS Status = NtCreateFile(&hFile, (GENERIC_READ | SYNCHRONIZE), &FileObjectAttributes, &IoStatusBlock, 0,
+		NTSTATUS Status = NtCreateFile(&hFile, GENERIC_READ | SYNCHRONIZE, &FileObjectAttributes, &IoStatusBlock, 0,
 			0, FILE_SHARE_READ, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0);
 
-		if (hFile == INVALID_HANDLE_VALUE) {
-			return FALSE;
+		if (hFile == INVALID_HANDLE_VALUE && status != STATUS_SUCCESS) {
+			goto CleanUp;
 		}
 
-		WCHAR lpszFilePath[MAX_PATH + 1];
 		DWORD dwResult = GetFinalPathNameByHandle(hFile, lpszFilePath, _countof(lpszFilePath) - 1, VOLUME_NAME_DOS);
 		if (dwResult == 0) {
-			CloseHandle(hFile);
-			return FALSE;
+			goto CleanUp;
 		}
 		else if (dwResult >= _countof(lpszFilePath)) {
-			CloseHandle(hFile);
-			return FALSE;
+			goto CleanUp;
 		}
 
-		LPWSTR pwszPath = NULL;
 		wcstok_s(lpszFilePath, L"\\", &pwszPath);
 
-		wprintf(L"    Path:\t %s\n", pwszPath);
-		wprintf(L"    BaseAddress:\t 0x%p \n", kernelBase);
+		wprintf(L"    Path:        %s\n", pwszPath);
 
 		if (GetBinaryType(pwszPath, &dwBinaryType)) {
 			if (dwBinaryType == SCS_64BIT_BINARY) {
-				wprintf(L"    ImageType:\t 64-bit\n");
+				wprintf(L"    ImageType:   64-bit\n");
 			}
 			else {
-				wprintf(L"    ImageType:\t 32-bit\n");
+				wprintf(L"    ImageType:   32-bit\n");
 			}
 		}
 
 		DWORD dwHandle;
-		DWORD dwLen = GetFileVersionInfoSize(pwszPath, &dwHandle);
+		dwLen = GetFileVersionInfoSize(pwszPath, &dwHandle);
 		if (!dwLen) {
-			CloseHandle(hFile);
-			return FALSE;
+			goto CleanUp;
 		}
 
-		PBYTE lpVerInfo = (PBYTE)calloc(dwLen, sizeof(BYTE));
+		lpVerInfo = (PBYTE)GlobalAlloc(GPTR, dwLen);
 		if (!GetFileVersionInfo(pwszPath, dwHandle, dwLen, lpVerInfo)) {
-			CloseHandle(hFile);
-			return FALSE;
+			goto CleanUp;
 		}
 
 		struct LANGANDCODEPAGE {
@@ -655,51 +733,64 @@ BOOL EnumKernel() {
 			WORD wCodePage;
 		} *lpTranslate;
 
-		WCHAR wcCodePage[MAX_PATH] = { 0 };
-		LPWSTR lpCompany = (LPWSTR)calloc(MAX_PATH, sizeof(WCHAR));
-		LPWSTR lpDescription = (LPWSTR)calloc(MAX_PATH, sizeof(WCHAR));
-		LPWSTR lpProductVersion = (LPWSTR)calloc(MAX_PATH, sizeof(WCHAR));
 		UINT uLen;
-
 		if (VerQueryValue(lpVerInfo, L"\\VarFileInfo\\Translation", (void **)&lpTranslate, &uLen)) {
 			swprintf_s(wcCodePage, _countof(wcCodePage), L"%04x%04x", lpTranslate->wLanguage, lpTranslate->wCodePage);
 
-			lstrcat(lpCompany, L"\\StringFileInfo\\");
-			lstrcat(lpCompany, wcCodePage);
-			lstrcat(lpCompany, L"\\CompanyName");
+			wcscat_s(wcCompanyName, _countof(wcCompanyName), L"\\StringFileInfo\\");
+			wcscat_s(wcCompanyName, _countof(wcCompanyName), wcCodePage);
+			wcscat_s(wcCompanyName, _countof(wcCompanyName), L"\\CompanyName");
 
-			lstrcat(lpDescription, L"\\StringFileInfo\\");
-			lstrcat(lpDescription, wcCodePage);
-			lstrcat(lpDescription, L"\\FileDescription");
+			wcscat_s(wcDescription, _countof(wcDescription), L"\\StringFileInfo\\");
+			wcscat_s(wcDescription, _countof(wcDescription), wcCodePage);
+			wcscat_s(wcDescription, _countof(wcDescription), L"\\FileDescription");
 
-			lstrcat(lpProductVersion, L"\\StringFileInfo\\");
-			lstrcat(lpProductVersion, wcCodePage);
-			lstrcat(lpProductVersion, L"\\ProductVersion");
+			wcscat_s(wcProductVersion, _countof(wcProductVersion), L"\\StringFileInfo\\");
+			wcscat_s(wcProductVersion, _countof(wcProductVersion), wcCodePage);
+			wcscat_s(wcProductVersion, _countof(wcProductVersion), L"\\ProductVersion");
 
-			if (VerQueryValue(lpVerInfo, lpCompany, (void **)&lpCompany, &uLen)) {
-				wprintf(L"    CompanyName:\t %s\n", lpCompany);
+			if (VerQueryValue(lpVerInfo, wcCompanyName, (void **)&lpCompany, &uLen)) {
+				wprintf(L"    CompanyName: %ls\n", lpCompany);
 			}
-			if (VerQueryValue(lpVerInfo, lpDescription, (void **)&lpDescription, &uLen)) {
-				wprintf(L"    Description:\t %s\n", lpDescription);
+			if (VerQueryValue(lpVerInfo, wcDescription, (void **)&lpDescription, &uLen)) {
+				wprintf(L"    Description: %ls\n", lpDescription);
 			}
-			if (VerQueryValue(lpVerInfo, lpProductVersion, (void **)&lpProductVersion, &uLen)) {
-				wprintf(L"    Version:\t %s\n", lpProductVersion);
+			if (VerQueryValue(lpVerInfo, wcProductVersion, (void **)&lpProductVersion, &uLen)) {
+				wprintf(L"    Version:     %ls\n", lpProductVersion);
 			}
 		}
-
-		CloseHandle(hFile);
 	}
 	else {
-		wprintf(L"    KernelImage:\t %hs \n", kernelImage);
-		wprintf(L"    BaseAddress:\t 0x%p \n", kernelBase);
+		wprintf(L"    KernelImage: %hs \n", kernelImage);
+		wprintf(L"    BaseAddress: 0x%p \n", kernelBase);
 	}
 
-	status = NtFreeVirtualMemory(NtCurrentProcess(), &pBuffer, &uSize, MEM_RELEASE);
+CleanUp:
+
+	if (lpwKernelPath != NULL) {
+		free(lpwKernelPath);
+	}
+
+	if (pBuffer == NULL) {
+		status = NtFreeVirtualMemory(NtCurrentProcess(), &pBuffer, &uSize, MEM_RELEASE);
+	}
+
+	if (hFile != NULL && hFile != INVALID_HANDLE_VALUE) {
+		CloseHandle(hFile);
+	}
+
+	if (lpVerInfo != NULL) {
+		GlobalFree(lpVerInfo);
+	}
+	else {
+		return FALSE;
+	}
 
 	return TRUE;
 }
 
 BOOL GetTcpSessions(DWORD ProcessId) {
+	BOOL bResult = TRUE;
 	PMIB_TCPTABLE2 pTcpTable;
 	ULONG ulSize = 0;
 	DWORD dwRetVal = 0;
@@ -719,15 +810,16 @@ BOOL GetTcpSessions(DWORD ProcessId) {
 		HeapFree(GetProcessHeap(), 0, (pTcpTable));
 		pTcpTable = (MIB_TCPTABLE2 *)HeapAlloc(GetProcessHeap(), 0, (ulSize));
 		if (pTcpTable == NULL) {
-			return FALSE;
+			bResult = FALSE;
+			goto CleanUp;
 		}
 	}
 
 	if ((dwRetVal = GetTcpTable2(pTcpTable, &ulSize, TRUE)) == NO_ERROR) {
 		for (i = 0; i < (int)pTcpTable->dwNumEntries; i++) {
 			if (pTcpTable->table[i].dwOwningPid == ProcessId) {
-				wprintf(L"<-> Session:\t TCP\n");
-				wprintf(L"    State:\t ");
+				wprintf(L"<-> Session:     TCP\n");
+				wprintf(L"    State:       ");
 				switch (pTcpTable->table[i].dwState) {
 				case MIB_TCP_STATE_CLOSED:
 					wprintf(L"CLOSED\n");
@@ -773,33 +865,37 @@ BOOL GetTcpSessions(DWORD ProcessId) {
 				_RtlIpv4AddressToStringW RtlIpv4AddressToStringW = (_RtlIpv4AddressToStringW)
 					GetProcAddress(GetModuleHandle(L"ntdll.dll"), "RtlIpv4AddressToStringW");
 				if (RtlIpv4AddressToStringW == NULL) {
-					return FALSE;
+					bResult = FALSE;
+					goto CleanUp;
 				}
 
 				IpAddr.S_un.S_addr = (u_long)pTcpTable->table[i].dwLocalAddr;
 				RtlIpv4AddressToStringW(&IpAddr, szLocalAddr);
-				wprintf(L"    Local Addr:\t %s:%d\n", szLocalAddr, ntohs((u_short)pTcpTable->table[i].dwLocalPort));
+				wprintf(L"    Local Addr:  %s:%d\n", szLocalAddr, ntohs((u_short)pTcpTable->table[i].dwLocalPort));
 
 				IpAddr.S_un.S_addr = (u_long)pTcpTable->table[i].dwRemoteAddr;
 				RtlIpv4AddressToStringW(&IpAddr, szRemoteAddr);
-				wprintf(L"    Remote Addr:\t %s:%d\n\n", szRemoteAddr, ntohs((u_short)pTcpTable->table[i].dwRemotePort));
+				wprintf(L"    Remote Addr: %s:%d\n\n", szRemoteAddr, ntohs((u_short)pTcpTable->table[i].dwRemotePort));
 			}
 		}
 	}
 	else {
-		HeapFree(GetProcessHeap(), 0, (pTcpTable));
-		return FALSE;
+		bResult = FALSE;
+		goto CleanUp;
 	}
+
+CleanUp:
 
 	if (pTcpTable != NULL) {
 		HeapFree(GetProcessHeap(), 0, (pTcpTable));
 		pTcpTable = NULL;
 	}
 
-	return FALSE;
+	return bResult;
 }
 
 BOOL GetTcp6Sessions(DWORD ProcessId) {
+	BOOL bResult = TRUE;
 	PMIB_TCP6TABLE2 pTcpTable;
 	ULONG ulSize = 0;
 	DWORD dwRetVal = 0;
@@ -818,15 +914,16 @@ BOOL GetTcp6Sessions(DWORD ProcessId) {
 		HeapFree(GetProcessHeap(), 0, (pTcpTable));
 		pTcpTable = (MIB_TCP6TABLE2 *)HeapAlloc(GetProcessHeap(), 0, (ulSize));
 		if (pTcpTable == NULL) {
-			return FALSE;
+			bResult = FALSE;
+			goto CleanUp;
 		}
 	}
 
 	if ((dwRetVal = GetTcp6Table2(pTcpTable, &ulSize, TRUE)) == NO_ERROR) {
 		for (i = 0; i < (int)pTcpTable->dwNumEntries; i++) {
 			if (pTcpTable->table[i].dwOwningPid == ProcessId) {
-				wprintf(L"<-> Session:\t TCPV6\n");
-				wprintf(L"    State:\t ");
+				wprintf(L"<-> Session:     TCPV6\n");
+				wprintf(L"    State:       ");
 				switch (pTcpTable->table[i].State) {
 				case MIB_TCP_STATE_CLOSED:
 					wprintf(L"CLOSED\n");
@@ -872,31 +969,34 @@ BOOL GetTcp6Sessions(DWORD ProcessId) {
 				_RtlIpv6AddressToStringW RtlIpv6AddressToStringW = (_RtlIpv6AddressToStringW)
 					GetProcAddress(GetModuleHandle(L"ntdll.dll"), "RtlIpv6AddressToStringW");
 				if (RtlIpv6AddressToStringW == NULL) {
-					return FALSE;
+					bResult = FALSE;
+					goto CleanUp;
 				}
 
 				RtlIpv6AddressToStringW(&pTcpTable->table[i].LocalAddr, szLocalAddr);
 				if (_wcsicmp(szLocalAddr, L"::") == 0) {
-					wprintf(L"    Local Addr:\t [0:0:0:0:0:0:0:0]:%d\n", ntohs((u_short)pTcpTable->table[i].dwLocalPort));
+					wprintf(L"    Local Addr:  [0:0:0:0:0:0:0:0]:%d\n", ntohs((u_short)pTcpTable->table[i].dwLocalPort));
 				}
 				else {
-					wprintf(L"    Local Addr:\t [%s]:%d\n", szLocalAddr, ntohs((u_short)pTcpTable->table[i].dwLocalPort));
+					wprintf(L"    Local Addr:  [%s]:%d\n", szLocalAddr, ntohs((u_short)pTcpTable->table[i].dwLocalPort));
 				}
 
 				RtlIpv6AddressToStringW(&pTcpTable->table[i].RemoteAddr, szRemoteAddr);
 				if (_wcsicmp(szRemoteAddr, L"::") == 0) {
-					wprintf(L"    Remote Addr:\t [0:0:0:0:0:0:0:0]:%d\n\n", ntohs((u_short)pTcpTable->table[i].dwRemotePort));
+					wprintf(L"    Remote Addr: [0:0:0:0:0:0:0:0]:%d\n\n", ntohs((u_short)pTcpTable->table[i].dwRemotePort));
 				}
 				else {
-					wprintf(L"    Remote Addr:\t [%s]:%d\n\n", szRemoteAddr, ntohs((u_short)pTcpTable->table[i].dwRemotePort));
+					wprintf(L"    Remote Addr: [%s]:%d\n\n", szRemoteAddr, ntohs((u_short)pTcpTable->table[i].dwRemotePort));
 				}
 			}
 		}
 	}
 	else {
-		HeapFree(GetProcessHeap(), 0, (pTcpTable));
-		return FALSE;
+		bResult = FALSE;
+		goto CleanUp;
 	}
+
+CleanUp:
 
 	if (pTcpTable != NULL) {
 		HeapFree(GetProcessHeap(), 0, (pTcpTable));
@@ -973,14 +1073,18 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 				SetDebugPrivilege();
 			}
 
+#pragma warning( push )
+#pragma warning( disable : 4311 )		//C4311: 'type cast': pointer truncation from 'HANDLE' to 'DWORD'
+#pragma warning( disable : 4302 )		//C4302: 'type cast': truncation from 'HANDLE' to 'DWORD'
+
 			PSYSTEM_PROCESSES pProcInfo = (PSYSTEM_PROCESSES)pBuffer;
 			do {
 				pProcInfo = (PSYSTEM_PROCESSES)(((LPBYTE)pProcInfo) + pProcInfo->NextEntryDelta);
 
-				if (pProcInfo->ProcessId == dwPid) {
-					wprintf(L"\n[+] ProcessName:\t %wZ\n", &pProcInfo->ProcessName);
-					wprintf(L"    ProcessID:\t %d\n", (DWORD)pProcInfo->ProcessId);
-					wprintf(L"    PPID:\t %d ", (DWORD)pProcInfo->InheritedFromProcessId);
+				if ((DWORD)pProcInfo->ProcessId == dwPid) {
+					wprintf(L"\n[+] ProcessName: %wZ\n", &pProcInfo->ProcessName);
+					wprintf(L"    ProcessID:   %d\n", (DWORD)pProcInfo->ProcessId);
+					wprintf(L"    PPID:        %d ", (DWORD)pProcInfo->InheritedFromProcessId);
 
 					PSYSTEM_PROCESSES pParentInfo = (PSYSTEM_PROCESSES)pBuffer;
 					do {
@@ -1003,11 +1107,11 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 					// Convert the Createtime to local time.
 					FileTimeToSystemTime(&ftCreate, &stUTC);
 					if (SystemTimeToTzSpecificLocalTime(NULL, &stUTC, &stLocal)) {
-						wprintf(L"    CreateTime:\t %02d/%02d/%d %02d:%02d\n", stLocal.wDay, stLocal.wMonth, stLocal.wYear, stLocal.wHour, stLocal.wMinute);
+						wprintf(L"    CreateTime:  %02d/%02d/%d %02d:%02d\n", stLocal.wDay, stLocal.wMonth, stLocal.wYear, stLocal.wHour, stLocal.wMinute);
 					}
 
 					if (ProcessIdToSessionId((DWORD)pProcInfo->ProcessId, &SessionID)) {
-						wprintf(L"    SessionID:\t %d\n", SessionID);
+						wprintf(L"    SessionID:   %d\n", SessionID);
 					}
 
 					if ((DWORD)pProcInfo->ProcessId == 4) {
@@ -1027,28 +1131,24 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 
 					NTSTATUS status = NtOpenProcess(&hProcess, PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_DUP_HANDLE, &ObjectAttributes, &uPid);
 					if (hProcess != NULL) {
-						LPWSTR chUserName = GetTokenUser(hProcess);
-						if (chUserName != NULL) {
-							wprintf(L"    UserName:\t %s\n", chUserName);
-							chUserName = NULL;
+						LPWSTR lpwProcUser = GetProcessUser(hProcess, FALSE, TRUE, TRUE);
+						if (lpwProcUser != NULL) {
+							wprintf(L"    UserName:    %s\n", lpwProcUser);
+							free(lpwProcUser);
 						}
 
 						DWORD dwIntegrityLevel = IntegrityLevel(hProcess);
-						if (dwIntegrityLevel == SECURITY_MANDATORY_LOW_RID)
-						{
-							wprintf(L"    Integrity:\t Low\n");
+						if (dwIntegrityLevel == LowIntegrity) {
+							wprintf(L"    Integrity:   Low\n");
 						}
-						else if (dwIntegrityLevel >= SECURITY_MANDATORY_MEDIUM_RID && dwIntegrityLevel < SECURITY_MANDATORY_HIGH_RID)
-						{
-							wprintf(L"    Integrity:\t Medium\n");
+						else if (dwIntegrityLevel == MediumIntegrity) {
+							wprintf(L"    Integrity:   Medium\n");
 						}
-						else if (dwIntegrityLevel >= SECURITY_MANDATORY_HIGH_RID && dwIntegrityLevel < SECURITY_MANDATORY_SYSTEM_RID)
-						{
-							wprintf(L"    Integrity:\t High\n");
+						else if (dwIntegrityLevel == HighIntegrity) {
+							wprintf(L"    Integrity:   High\n");
 						}
-						else if (dwIntegrityLevel >= SECURITY_MANDATORY_SYSTEM_RID)
-						{
-							wprintf(L"    Integrity:\t System\n");
+						else if (dwIntegrityLevel == SystemIntegrity) {
+							wprintf(L"    Integrity:   System\n");
 						}
 
 						EnumPeb(hProcess);
@@ -1071,7 +1171,14 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)
 
 			} while (pProcInfo);
 
-			status = NtFreeVirtualMemory(NtCurrentProcess(), &pBuffer, &uSize, MEM_RELEASE);		
+#pragma warning( pop )
+
+			if (pBuffer) {
+				status = NtFreeVirtualMemory(NtCurrentProcess(), &pBuffer, &uSize, MEM_RELEASE);
+			}
+			else {
+				ExitProcess(0);
+			}
 		}
 
 		// Flush STDOUT
